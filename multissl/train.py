@@ -99,7 +99,8 @@ trainer = pl.Trainer(max_epochs=args.epochs,
                      accelerator=accelerator,
                      log_every_n_steps=10,
                     callbacks=[checkpoint_callback, lr_monitor],
-                    logger = wandb_logger)
+                    logger = wandb_logger,
+                    limit_train_batches= 0.5 )
 
 trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
 
