@@ -53,6 +53,8 @@ def get_args():
 
 args = get_args()
 
+pl.seed_everything(args.seed)
+
 # Create a multiview transform that returns two different augmentations of each image.
 transform_multispectral = get_transform(args)
 transform_ms = MultiViewTransform(transforms=[transform_multispectral,
@@ -65,12 +67,14 @@ dataset_train_ms = LightlyDataset(
     transform = transform_ms,
 )
 dataset_train_ms.dataset.loader = tifffile_loader
-
+sample, target, fname = dataset_train_ms[0]
+print(sample)
 # Build a PyTorch dataloader.
 dataloader_train_ms = torch.utils.data.DataLoader(
     dataset_train_ms,                            # Pass the dataset to the dataloader.
     batch_size=args.batch_size,         # A large batch size helps with learning.
     shuffle=True,                       # Shuffling is important!
+    drop_last = True,
     num_workers=args.num_workers,
 )
 
