@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="Multispectral SSL",
+    name="multissl",
     version="0.1.0",
     author="Jurrian Doornbos",
     author_email="jurrian.dooornbos@wur.nl",
