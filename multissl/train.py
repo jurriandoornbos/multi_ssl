@@ -67,16 +67,7 @@ dataset_train_ms = LightlyDataset(
     transform = transform_ms,
 )
 dataset_train_ms.dataset.loader = tifffile_loader
-sample, target, fname = dataset_train_ms[0]
-print(sample)
-# Build a PyTorch dataloader.
-dataloader_train_ms = torch.utils.data.DataLoader(
-    dataset_train_ms,                            # Pass the dataset to the dataloader.
-    batch_size=args.batch_size,         # A large batch size helps with learning.
-    shuffle=True,                       # Shuffling is important!
-    drop_last = True,
-    num_workers=args.num_workers,
-)
+
 
 # Step 5: Load FastSiam Model with 4-channel support
 model = build_model(args)
@@ -97,13 +88,25 @@ accelerator = "gpu" if torch.cuda.is_available() else "cpu"
 
 wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
 
-trainer = pl.Trainer(max_epochs=args.epochs, 
-                     devices=1, 
-                     accelerator=accelerator,
-                     log_every_n_steps=10,
-                    callbacks=[checkpoint_callback, lr_monitor],
-                    logger = wandb_logger,
-                    limit_train_batches= 0.5, )
+def run():
 
-trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
+    # Build a PyTorch dataloader.
+    dataloader_train_ms = torch.utils.data.DataLoader(
+        dataset_train_ms,                            # Pass the dataset to the dataloader.
+        batch_size=args.batch_size,         # A large batch size helps with learning.
+        shuffle=True,                       # Shuffling is important!
+        drop_last = True,
+        num_workers=args.num_workers,
+    )
+    trainer = pl.Trainer(max_epochs=args.epochs, 
+                        devices=1, 
+                        accelerator=accelerator,
+                        log_every_n_steps=10,
+                        callbacks=[checkpoint_callback, lr_monitor],
+                        logger = wandb_logger,
+                        limit_train_batches= 1, )
 
+    trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
+
+if __name__ == "__main__":
+    run()
