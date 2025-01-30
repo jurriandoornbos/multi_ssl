@@ -22,10 +22,10 @@ class FastSiam(pl.LightningModule):
 
         # Load backbone dynamically based on user input
         if backbone == "resnet18":
-            resnet = torchvision.models.resnet18(weights=None)
+            resnet = torchvision.models.resnet18()
             backbone_dim = 512
         elif backbone == "resnet50":
-            resnet = torchvision.models.resnet50(weights=None)
+            resnet = torchvision.models.resnet50()
             backbone_dim = 2048
         else:
             raise ValueError("Unsupported backbone. Choose resnet18 or resnet50.")
