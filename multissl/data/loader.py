@@ -8,7 +8,7 @@
 
 
 import tifffile as tiff
-#from PIL import Image
+
 
 def tifffile_loader(f):
     img_path = f
