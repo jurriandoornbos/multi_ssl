@@ -7,9 +7,9 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 import argparse
-from .data import get_transform, tifffile_loader
+from data import get_transform, tifffile_loader
 
-from .models import build_model
+from models import build_model
 import pytorch_lightning as pl
 
 import torch
