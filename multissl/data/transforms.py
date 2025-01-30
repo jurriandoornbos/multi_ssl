@@ -75,6 +75,10 @@ class GaussianBlur:
 
     def __call__(self, img):
         return np.stack([cv2.GaussianBlur(img[..., i], (self.kernel_size, self.kernel_size), 0) for i in range(img.shape[-1])], axis=-1)
+def apply_3_transforms(img,pipeline):
+
+    return [pipeline(img) for _ in range(3)]  # Generates 3 views
+
 
 def get_transform(args):
     img_size = args.input_size
@@ -91,14 +95,8 @@ def get_transform(args):
     base.append(UIntToFloat()) # Convert to PyTorch tensor & normalize to [0,1])
     base.append(transformsv2.ToDtype(torch.float32, scale=True))
     pipeline = transforms.Compose(base)
-
-    def apply_3_transforms(img):
-
-        return [pipeline(img) for _ in range(3)]  # Generates 3 views
     
     if args.ssl_method == "fastsiam":
-
-        return  apply_3_transforms
-    
-    else:
-        return pipeline
+        def wrapper(img):
+            return apply_3_transforms(img, pipeline)
+    return wrapper

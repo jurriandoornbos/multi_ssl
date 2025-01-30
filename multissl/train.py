@@ -69,13 +69,6 @@ dataloader_train_ms = torch.utils.data.DataLoader(
     num_workers=args.num_workers,
 )
 
-# scale the learning rate
-lr = 0.05 * args.batch_size / args.input_size
-args.lr = lr
-
-# seed torch and numpy
-s = args.seed
-
 # Step 5: Load FastSiam Model with 4-channel support
 model = build_model(args)
 # Step 6: Checkpointer:
@@ -92,6 +85,7 @@ lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
 
 accelerator = "gpu" if torch.cuda.is_available() else "cpu"
 # every 10 epochs we save
+
 wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
 
 trainer = pl.Trainer(max_epochs=args.epochs, 
@@ -100,7 +94,7 @@ trainer = pl.Trainer(max_epochs=args.epochs,
                      log_every_n_steps=10,
                     callbacks=[checkpoint_callback, lr_monitor],
                     logger = wandb_logger,
-                    limit_train_batches= 0.5 )
+                    limit_train_batches= 0.5, )
 
 trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
 
