@@ -7,22 +7,14 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 import argparse
-from multissl.data.transforms import get_transform
-from multissl.data.loader import tifffile_loader
-from multissl.models import build_model
+from data.transforms import get_transform
+from data.loader import tifffile_loader
+from models import build_model
 import pytorch_lightning as pl
-
-from lightly.transforms.multi_view_transform import MultiViewTransform
 
 import torch
 
 from lightly.data import LightlyDataset
-
-
-from lightly.loss import NegativeCosineSimilarity
-from lightly.models.modules.heads import SimSiamPredictionHead, SimSiamProjectionHead
-from lightly.transforms import SimCLRTransform, utils
-
 
 def get_args():
     parser = argparse.ArgumentParser(description="Self-Supervised Learning with Lightly AI")
