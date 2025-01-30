@@ -4,9 +4,20 @@ import torchvision
 from torch import nn
 from lightly.loss import NegativeCosineSimilarity
 from lightly.models.modules import SimSiamPredictionHead, SimSiamProjectionHead
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 class FastSiam(pl.LightningModule):
-    def __init__(self, backbone="resnet18", hidden_dim=512, proj_dim=128, pred_dim=64, lr=0.06, in_channels=4):
+    def __init__(self, 
+                 backbone="resnet18", 
+                 hidden_dim=512, 
+                 proj_dim=128, 
+                 pred_dim=64, 
+                 lr=0.125, 
+                 in_channels=4, 
+                 batch_size = 64,
+                 epochs = 400,
+                 momentum = 0.9,
+                 weight_decay = 1e-4,):
         super().__init__()
 
         # Load backbone dynamically based on user input
@@ -33,7 +44,14 @@ class FastSiam(pl.LightningModule):
         self.criterion = NegativeCosineSimilarity()
 
         # Learning rate
+          # Base LR for batch_size=32
         self.lr = lr
+        # Scale linearly for larger batch sizes
+        self.scaled_lr = self.lr * (batch_size / 32.0)
+        self.max_epochs = epochs
+
+        self.momentum = momentum
+        self.weight_decay = weight_decay
 
     def _modify_resnet_for_4_channels(self, resnet, in_channels):
         """Modifies the first ResNet conv layer to accept 4-channel input."""
@@ -64,7 +82,7 @@ class FastSiam(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Compute the SSL loss"""
-        views = batch[0]  # Two augmented views of the same image
+        views = batch[0]  # Two or FOUR? augmented views of the same image
         features = [self.forward(view) for view in views]
         zs = torch.stack([z for z, _ in features])
         ps = torch.stack([p for _, p in features])
@@ -79,4 +97,13 @@ class FastSiam(pl.LightningModule):
 
     def configure_optimizers(self):
         """Set up the optimizer"""
-        return torch.optim.SGD(self.parameters(), lr=self.lr, momentum=0.9, weight_decay=1e-4)
+        optim = torch.optim.SGD(self.parameters(), 
+                                lr=self.scaled_lr, 
+                                momentum=self.momentum, 
+                                weight_decay=self.weight_decay)
+        scheduler = CosineAnnealingLR(
+            optim,
+            T_max=self.max_epochs,    # typically #epochs or #iterations
+            eta_min=0.0              # minimum LR after decay
+        )
+        return [optim], [scheduler]

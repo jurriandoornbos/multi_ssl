@@ -29,3 +29,20 @@ Then we are ready for lightly and we want tifffile for our more complex image fi
 pip install lightly tifffile opencv-python-headless wandb
 ```
 
+## Training
+Everything has been implemented trhough PytorchLightning, an example script is presented in
+`multissl/train/train.py`:
+With parameters to select training method and model architecture.
+
+First implemented options are the FastSiam training method (default: `--ssl_method fastsiam`) and backbones ResNet18, ResNet50 (default: `--backbone resnet18`).
+
+```bash
+python multissl/train/train.py --input_dir ../msdata/data/chipped_336 --backbone resnet50
+```
+
+# Run a comparison of various SSL methods?
+1. FastSiam
+2. SimSiam
+3. MoCo
+4. AIM
+5. MAE

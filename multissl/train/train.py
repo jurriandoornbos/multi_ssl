@@ -34,7 +34,7 @@ def get_args():
     
     # Self-Supervised Learning Model
     parser.add_argument("--in_channels", type=int, default = 4, help = "Number of input channels of the image")
-    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "resnet101", "vit", "mobilenet"], help="Backbone model for SSL")
+    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50"], help="Backbone model for SSL")
     parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["simclr", "simsiam", "fastsiam"], help="SSL method")
     parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden layer dimension")
     parser.add_argument("--proj_dim", type=int, default=128, help="Projection head dimension")
@@ -42,9 +42,9 @@ def get_args():
     
     # Training Hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=0.03, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=0.125, help="Learning rate")
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum for optimizer")
-    parser.add_argument("--weight_decay", type=float, default=1e-6, help="Weight decay")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
 
     # Augmentation Settings
     parser.add_argument("--gaussian_blur", action="store_true", help="Apply Gaussian blur in augmentation")
@@ -107,5 +107,6 @@ trainer = pl.Trainer(max_epochs=args.epochs,
                     callbacks=[checkpoint_callback, lr_monitor],
                     logger = wandb_logger)
 
-trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
+if __name__ == "__main__":
+    trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
 

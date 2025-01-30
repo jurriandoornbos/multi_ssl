@@ -9,5 +9,9 @@ def build_model(args):
             proj_dim=args.proj_dim,
             pred_dim=args.pred_dim,
             lr=args.lr,
-            in_channels=args.in_channels)
+            in_channels=args.in_channels,
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,)
         return model
