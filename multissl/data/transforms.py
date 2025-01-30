@@ -102,5 +102,3 @@ def get_transform(args):
     
     else:
         return pipeline
-    
-"""We find that using three views for target computation offers the best trade-off and results in the highest transfer performance, hence we choose it as our default."""
