@@ -15,7 +15,7 @@ import cv2
 
 class GaussianNoise:
     """Add Gaussian noise to a NumPy array."""
-    def __init__(self, mean=0, std=5):  # Adjusted for 0-255 range
+    def __init__(self, mean=0, std=30):  # Adjusted for 0-255 range
         self.mean = mean
         self.std = std
 
