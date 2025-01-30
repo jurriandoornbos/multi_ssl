@@ -12,7 +12,6 @@ import random
 import torch
 from torchvision import transforms
 import cv2
-import torchvision.transforms.v2 as transformsv2
 
 class GaussianNoise:
     """Add Gaussian noise to a NumPy array."""

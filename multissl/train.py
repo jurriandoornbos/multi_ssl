@@ -31,9 +31,9 @@ def get_args():
     parser.add_argument("--in_channels", type=int, default = 4, help = "Number of input channels of the image")
     parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50"], help="Backbone model for SSL")
     parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["simclr", "simsiam", "fastsiam"], help="SSL method")
-    parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden layer dimension")
-    parser.add_argument("--proj_dim", type=int, default=128, help="Projection head dimension")
-    parser.add_argument("--pred_dim", type=int, default=64, help="Prediction head dimension")
+    parser.add_argument("--hidden_dim", type=int, default=2048, help="Hidden layer dimension")
+    parser.add_argument("--proj_dim", type=int, default=256, help="Projection head dimension")
+    parser.add_argument("--pred_dim", type=int, default=128, help="Prediction head dimension")
     
     # Training Hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
@@ -70,7 +70,7 @@ dataset_train_ms = LightlyDataset(
 dataset_train_ms.dataset.loader = tifffile_loader
 
 length_dataset = len(dataset_train_ms)
-print("dataset size: "+ str(length_dataset))
+print("Loaded dataset, dataset size: "+ str(length_dataset))
 # Step 5: Load FastSiam Model with 4-channel support
 model = build_model(args)
 # Step 6: Checkpointer:
