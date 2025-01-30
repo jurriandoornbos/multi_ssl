@@ -68,7 +68,7 @@ dataset_train_ms = LightlyDataset(
 )
 dataset_train_ms.dataset.loader = tifffile_loader
 
-
+length_dataset = len(dataset_train_ms)
 # Step 5: Load FastSiam Model with 4-channel support
 model = build_model(args)
 # Step 6: Checkpointer:
@@ -104,7 +104,7 @@ def run():
                         log_every_n_steps=10,
                         callbacks=[checkpoint_callback, lr_monitor],
                         logger = wandb_logger,
-                        limit_train_batches= 1, )
+                        limit_train_batches= length_dataset/2, )
 
     trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
 
