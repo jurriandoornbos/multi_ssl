@@ -28,7 +28,7 @@ def get_args():
 
     # Dataset and DataLoader
     parser.add_argument("--input_dir", type=str, required=True, help="Path to the dataset folder")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for training")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
     parser.add_argument("--input_size", type=int, default=224, help="Input image size")
     
@@ -73,6 +73,7 @@ dataloader_train_ms = torch.utils.data.DataLoader(
     dataset_train_ms,                            # Pass the dataset to the dataloader.
     batch_size=args.batch_size,         # A large batch size helps with learning.
     shuffle=True,                       # Shuffling is important!
+    num_workers=args.num_workers,
 )
 
 # scale the learning rate
@@ -103,7 +104,7 @@ wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
 trainer = pl.Trainer(max_epochs=args.epochs, 
                      devices=1, 
                      accelerator=accelerator,
-                     log_every_n_steps=10,
+                     log_every_n_steps=100,
                     callbacks=[checkpoint_callback, lr_monitor],
                     logger = wandb_logger)
 

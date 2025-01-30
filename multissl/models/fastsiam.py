@@ -14,7 +14,7 @@ class FastSiam(pl.LightningModule):
                  pred_dim=64, 
                  lr=0.125, 
                  in_channels=4, 
-                 batch_size = 64,
+                 batch_size = 32,
                  epochs = 400,
                  momentum = 0.9,
                  weight_decay = 1e-4,):
@@ -44,7 +44,7 @@ class FastSiam(pl.LightningModule):
         self.criterion = NegativeCosineSimilarity()
 
         # Learning rate
-          # Base LR for batch_size=32
+        # Base LR for batch_size=32
         self.lr = lr
         # Scale linearly for larger batch sizes
         self.scaled_lr = self.lr * (batch_size / 32.0)
