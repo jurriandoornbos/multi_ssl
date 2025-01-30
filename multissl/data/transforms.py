@@ -76,8 +76,9 @@ class GaussianBlur:
     def __call__(self, img):
         return np.stack([cv2.GaussianBlur(img[..., i], (self.kernel_size, self.kernel_size), 0) for i in range(img.shape[-1])], axis=-1)
 
-
-
+class ToTensor(object):
+  def __call__(self, np_data):
+    return torch.from_numpy(np_data)
 
 def get_transform(args):
     img_size = args.input_size
@@ -92,7 +93,7 @@ def get_transform(args):
 
     base.append(GaussianNoise(std=5))  # Adjusted for 0-255 range
     base.append(UIntToFloat()) # Convert to PyTorch tensor & normalize to [0,1])
-    base.append(transformsv2.ToDtype(torch.float32, scale=True))
+    base.append(ToTensor())
     pipeline = transforms.Compose(base)
     
     return pipeline

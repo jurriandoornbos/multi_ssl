@@ -47,6 +47,7 @@ def get_args():
     # Miscellaneous
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training")
+    parser.add_argument("--log_every", type=int, default=5, help="How many epochs between save")
 
     args = parser.parse_args()
     return args
@@ -69,6 +70,7 @@ dataset_train_ms = LightlyDataset(
 dataset_train_ms.dataset.loader = tifffile_loader
 
 length_dataset = len(dataset_train_ms)
+print("dataset size: "+ str(length_dataset))
 # Step 5: Load FastSiam Model with 4-channel support
 model = build_model(args)
 # Step 6: Checkpointer:
@@ -101,7 +103,7 @@ def run():
     trainer = pl.Trainer(max_epochs=args.epochs, 
                         devices=1, 
                         accelerator=accelerator,
-                        log_every_n_steps=10,
+                        log_every_n_steps=args.log_every,
                         callbacks=[checkpoint_callback, lr_monitor],
                         logger = wandb_logger,
                         limit_train_batches= length_dataset/2, )
