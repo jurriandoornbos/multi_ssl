@@ -97,7 +97,7 @@ wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
 trainer = pl.Trainer(max_epochs=args.epochs, 
                      devices=1, 
                      accelerator=accelerator,
-                     log_every_n_steps=20,
+                     log_every_n_steps=10,
                     callbacks=[checkpoint_callback, lr_monitor],
                     logger = wandb_logger)
 

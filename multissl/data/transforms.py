@@ -93,14 +93,14 @@ def get_transform(args):
     pipeline = transforms.Compose(base)
 
     def apply_3_transforms(img):
-        """Applies 4 transformations to a single image."""
-        return [pipeline(img) for _ in range(3)]  # Generates 4 views
+
+        return [pipeline(img) for _ in range(3)]  # Generates 3 views
     
     if args.ssl_method == "fastsiam":
-        """We find that using three views for target computation 
-        offers the best trade-off and results in the highest transfer performance, 
-        hence we choose it as our default."""
+
         return  apply_3_transforms
     
     else:
         return pipeline
+    
+"""We find that using three views for target computation offers the best trade-off and results in the highest transfer performance, hence we choose it as our default."""
