@@ -101,6 +101,5 @@ trainer = pl.Trainer(max_epochs=args.epochs,
                     callbacks=[checkpoint_callback, lr_monitor],
                     logger = wandb_logger)
 
-if __name__ == "__main__":
-    trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
+trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
 
