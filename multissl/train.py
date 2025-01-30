@@ -15,6 +15,8 @@ import pytorch_lightning as pl
 import torch
 
 from lightly.data import LightlyDataset
+from lightly.transforms.multi_view_transform import MultiViewTransform
+
 
 def get_args():
     parser = argparse.ArgumentParser(description="Self-Supervised Learning with Lightly AI")
@@ -53,11 +55,14 @@ args = get_args()
 
 # Create a multiview transform that returns two different augmentations of each image.
 transform_multispectral = get_transform(args)
+transform_ms = MultiViewTransform(transforms=[transform_multispectral,
+                                              transform_multispectral,
+                                              transform_multispectral])
 
 # Create a dataset from your image folder.
 dataset_train_ms = LightlyDataset(
     input_dir = args.input_dir,
-    transform = transform_multispectral,
+    transform = transform_ms,
 )
 dataset_train_ms.dataset.loader = tifffile_loader
 
