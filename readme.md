@@ -1,0 +1,31 @@
+Using Lightly SSL for multispectal pretraining
+with some additional linear heads for segmentation and prediction.
+
+Self-Supervised Learning on images often requires higher batch-sizes, and is built around heavy augmentation and the original image with some from of reconstruction task. This learns very good transferrable, generalizable weights. (minimal labels needed for task-transfer)
+
+Although we are missing pretrained baselines and architectures for Multispectral imagery.
+The other channels that are being used should create some more interesting and better insights, but also makes it incompatible with existing DL vision models.
+
+So here are some baseline models, scripts, adjustments and tools to finetune a minor layer on minimal data.
+
+LightlySSL is the main SSL software framework we will use:
+
+## Installation
+https://docs.lightly.ai/self-supervised-learning/getting_started/install.html
+
+```bash
+mamba/conda create --name lightly python==3.9 
+conda activate lightssl
+```
+
+Do a manual pytorch w/cuda install first (Lightly is compatible with PyTorch and PyTorch Lightning v2.0+!)
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+```
+
+Then we are ready for lightly and we want tifffile for our more complex image files and cv2 for the data augments
+```bash
+pip install lightly tifffile opencv-python-headless wandb
+```
+
