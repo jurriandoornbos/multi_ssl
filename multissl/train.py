@@ -11,7 +11,7 @@ from data import get_transform, tifffile_loader
 
 from models import build_model
 import pytorch_lightning as pl
-from plots import plot_first_batch
+#from plots import plot_first_batch
 import torch
 
 from lightly.data import LightlyDataset
@@ -105,7 +105,7 @@ def main():
     )
 
     #check if everythign went okay
-    plot_first_batch(dataloader_train_ms)
+    #plot_first_batch(dataloader_train_ms)
 
     trainer = pl.Trainer(max_epochs=args.epochs, 
                         devices=1, 
