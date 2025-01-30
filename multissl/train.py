@@ -11,7 +11,7 @@ from data import get_transform, tifffile_loader
 
 from models import build_model
 import pytorch_lightning as pl
-
+from plots import plot_first_batch
 import torch
 
 from lightly.data import LightlyDataset
@@ -54,43 +54,46 @@ def get_args():
 
 args = get_args()
 
-pl.seed_everything(args.seed)
+def main():
+        
+    pl.seed_everything(args.seed)
 
-# Create a multiview transform that returns two different augmentations of each image.
-transform_multispectral = get_transform(args)
-transform_ms = MultiViewTransform(transforms=[transform_multispectral,
-                                              transform_multispectral,
-                                              transform_multispectral])
+    # Create a multiview transform that returns two different augmentations of each image.
+    transform_multispectral = get_transform(args)
+    transform_ms = MultiViewTransform(transforms=[transform_multispectral,
+                                                transform_multispectral,
+                                                transform_multispectral])
 
-# Create a dataset from your image folder.
-dataset_train_ms = LightlyDataset(
-    input_dir = args.input_dir,
-    transform = transform_ms,
-)
-dataset_train_ms.dataset.loader = tifffile_loader
+    # Create a dataset from your image folder.
+    dataset_train_ms = LightlyDataset(
+        input_dir = args.input_dir,
+        transform = transform_ms,
+    )
+    dataset_train_ms.dataset.loader = tifffile_loader
 
-length_dataset = len(dataset_train_ms)
-print("Loaded dataset, dataset size: "+ str(length_dataset))
-# Step 5: Load FastSiam Model with 4-channel support
-model = build_model(args)
-# Step 6: Checkpointer:
+    length_dataset = len(dataset_train_ms)
+    print("Loaded dataset, dataset size: "+ str(length_dataset))
 
-checkpoint_callback = pl.callbacks.ModelCheckpoint(
-    dirpath="checkpoints/",
-    filename="{args.ssl_method}-{epoch:02d}-{train_loss_ssl:.4f}",
-    save_top_k=3,  # Save the 3 best models
-    monitor="train_loss_ssl",
-    mode="min",  # Save based on lowest loss
-    save_last=True  # Also save the latest model
-)
-lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
 
-accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-# every 10 epochs we save
+    # Step 5: Load FastSiam Model with 4-channel support
 
-wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
+    model = build_model(args)
+    # Step 6: Checkpointer:
 
-def run():
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        dirpath="checkpoints/",
+        filename="{args.ssl_method}-{epoch:02d}-{train_loss_ssl:.4f}",
+        save_top_k=3,  # Save the 3 best models
+        monitor="train_loss_ssl",
+        mode="min",  # Save based on lowest loss
+        save_last=True  # Also save the latest model
+    )
+    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
+
+    accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+    # every 10 epochs we save
+
+    wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
 
     # Build a PyTorch dataloader.
     dataloader_train_ms = torch.utils.data.DataLoader(
@@ -100,15 +103,21 @@ def run():
         drop_last = True,
         num_workers=args.num_workers,
     )
+
+    #check if everythign went okay
+    plot_first_batch(dataloader_train_ms)
+
     trainer = pl.Trainer(max_epochs=args.epochs, 
                         devices=1, 
                         accelerator=accelerator,
                         log_every_n_steps=args.log_every,
                         callbacks=[checkpoint_callback, lr_monitor],
                         logger = wandb_logger,
-                        limit_train_batches= length_dataset/2, )
+                        limit_train_batches= length_dataset/2,
+                        strategy = "auto" )
 
     trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
 
 if __name__ == "__main__":
-    run()
+    torch.set_float32_matmul_precision("high") 
+    main()

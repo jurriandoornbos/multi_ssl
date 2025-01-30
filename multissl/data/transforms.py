@@ -33,7 +33,7 @@ class UIntToFloat:
 
 class RandomResizedCrop:
     """Crop and resize a random region of the image."""
-    def __init__(self, size, scale=(0.2, 1.0)):
+    def __init__(self, size, scale=(0.8, 1.0)):
         self.size = size
         self.scale = scale
 

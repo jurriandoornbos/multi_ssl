@@ -82,7 +82,7 @@ class FastSiam(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Compute the SSL loss"""
-        views = batch[0]  # Three images
+        views = batch[0]  # Three from the batch is all the views
         features = [self.forward(view) for view in views]
         zs = torch.stack([z for z, _ in features])
         ps = torch.stack([p for _, p in features])

@@ -37,8 +37,11 @@ With parameters to select training method and model architecture.
 First implemented options are the FastSiam training method (default: `--ssl_method fastsiam`) and backbones ResNet18, ResNet50 (default: `--backbone resnet18`).
 
 ```bash
-python multissl/train/train.py --input_dir ../msdata/data/chipped_336 --backbone resnet50
+python multissl/train/train.py --input_dir D:\\Jurrian\chipped_336 --backbone resnet50
 ```
+python multissl/train.py --input_dir D:\Jurrian\chipped_336 --backbone resnet50 --num_workers 15
+
+python multissl/train.py --input_dir ../msdata/data/chipped_336 --num_workers 0
 
 # Run a comparison of various SSL methods?
 1. FastSiam
