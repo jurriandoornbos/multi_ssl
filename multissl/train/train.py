@@ -7,7 +7,8 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 import argparse
-from multissl.data import transforms, loader 
+from multissl.data.transforms import get_transform
+from multissl.data.loader import tifffile_loader
 from multissl.models import build_model
 import pytorch_lightning as pl
 
@@ -59,14 +60,14 @@ def get_args():
 args = get_args()
 
 # Create a multiview transform that returns two different augmentations of each image.
-transform_multispectral = transforms.get_transform(args)
+transform_multispectral = get_transform(args)
 
 # Create a dataset from your image folder.
 dataset_train_ms = LightlyDataset(
     input_dir = args.input_dir,
     transform = transform_multispectral,
 )
-dataset_train_ms.dataset.loader = loader.tifffile_loader
+dataset_train_ms.dataset.loader = tifffile_loader
 
 # Build a PyTorch dataloader.
 dataloader_train_ms = torch.utils.data.DataLoader(
