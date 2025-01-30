@@ -79,6 +79,7 @@ def main():
 
     model = build_model(args)
     # Step 6: Checkpointer:
+    model(weights=None)
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath="checkpoints/",
