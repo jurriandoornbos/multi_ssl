@@ -29,8 +29,10 @@ def plot_first_batch(batch, output_dir):
     views, targets, filenames = batch
     if len(views) == 3:
         view0, view1, view2 = views  # Unpacking two views from MultiViewCollate
-    else:
+        t = 3
+    elif len(views) > 3:
         view0, view1, view2, _ = views  # Unpacking two views from MultiViewCollate
+        t = len(views)
     # Plot 4 samples with two views each (3 rows, 4 columns)
     fig, axes = plt.subplots(3, 4, figsize=(12, 6))
 
@@ -52,9 +54,9 @@ def plot_first_batch(batch, output_dir):
         axes[2, i].imshow(img_view2)
         axes[2, i].axis("off")
 
-    axes[0, 0].set_title("View 0 (Aug)")
-    axes[1, 0].set_title("View 1 (Aug)")
-    axes[2, 0].set_title("View 2 (Aug)")
+    axes[0, 0].set_title("View 0 (Aug); {} views used".format(t))
+    axes[1, 0].set_title("View 1 target (Aug)")
+    axes[2, 0].set_title("View 2 target (Aug)")
 
     # Save figure
     save_path = os.path.join(output_dir, "lightly_multiview_batch.png")

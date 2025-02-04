@@ -30,7 +30,7 @@ def get_args():
     
     # Self-Supervised Learning Model
     parser.add_argument("--in_channels", type=int, default = 4, help = "Number of input channels of the image")
-    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50"], help="Backbone model for SSL")
+    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s"], help="Backbone model for SSL")
     parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["simclr", "simsiam", "fastsiam"], help="SSL method")
     parser.add_argument("--hidden_dim", type=int, default=2048, help="Hidden layer dimension")
     parser.add_argument("--proj_dim", type=int, default=256, help="Projection head dimension")
@@ -43,7 +43,7 @@ def get_args():
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum for optimizer")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--dataset_size", type=int, default = 1_000_000, help = "Dataset size, overridden after dataloading" )
-    parser.add_argument("--num_views", type = int, default = 3, help = "Number of augmentation views to feed the SSL, FastSIAM found 3 to be best")
+    parser.add_argument("--num_views", type = int, default = 4, help = "Number of augmentation views to feed the SSL, FastSIAM found 3 target + 1 base to be best")
 
  
     # Miscellaneous

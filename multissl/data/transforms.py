@@ -108,7 +108,7 @@ class ToTensor(object):
 def get_transform(args):
     img_size = args.input_size
     base =  [
-            RandomResizedCrop(size=img_size, scale=(0.5, 1)),  # Modify input_size as needed
+            RandomResizedCrop(size=img_size, scale=(0.2, 1)),  # Modify input_size as needed
             RandomHorizontalFlip(p=0.5),
             RandomVerticalFlip(p=0.5),
         ]
