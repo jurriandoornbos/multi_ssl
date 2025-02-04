@@ -1,6 +1,7 @@
 # user defined
 wandb
 checkpoints
+checkpoints_336
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,8 +1,18 @@
+# Copyright 2025 Jurrian Doornbos
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
 # Load dataset (update path as needed)
-
+import os
+import pytorch_lightning as pl
 
 # Convert tensor images for plotting
 def tensor_to_image(tensor):
@@ -14,13 +24,15 @@ def tensor_to_image(tensor):
     false_color = np.stack([image[:, :, 3], image[:, :, 1], image[:, :, 0]], axis=-1)  # (H, W, 3)
     return false_color
 
-def plot_first_batch(dataloader):
+def plot_first_batch(batch, output_dir):
     # Get first batch
-    views, targets, filenames = next(iter(dataloader))
-    view0, view1, view2 = views  # Unpacking two views from MultiViewCollate
+    views, targets, filenames = batch
+    if len(views) == 3:
+        view0, view1, view2 = views  # Unpacking two views from MultiViewCollate
+    else:
+        view0, view1, view2, _ = views  # Unpacking two views from MultiViewCollate
     # Plot 4 samples with two views each (3 rows, 4 columns)
     fig, axes = plt.subplots(3, 4, figsize=(12, 6))
-    print(view0.shape)
 
     for i in range(4):
         img_view0 = tensor_to_image(view0[i])
@@ -30,7 +42,7 @@ def plot_first_batch(dataloader):
         # Row 0: First view
         axes[0, i].imshow(img_view0)
         axes[0, i].axis("off")
-        axes[0, i].set_title(f"{filenames[i][:10]}")  # Show truncated filename
+        axes[0, i].set_title(f"{filenames[i][5:15]}")  # Show truncated filename
 
         # Row 1: Second view (transformed version)
         axes[1, i].imshow(img_view1)
@@ -40,13 +52,35 @@ def plot_first_batch(dataloader):
         axes[2, i].imshow(img_view2)
         axes[2, i].axis("off")
 
-    axes[0, 0].set_title("View 0 (Original Augmented)")
-    axes[1, 0].set_title("View 1 (Transformed)")
-    axes[2, 0].set_title("View 2 (Transformed)")
+    axes[0, 0].set_title("View 0 (Aug)")
+    axes[1, 0].set_title("View 1 (Aug)")
+    axes[2, 0].set_title("View 2 (Aug)")
 
     # Save figure
-    save_path = "lightly_multiview_batch.png"
+    save_path = os.path.join(output_dir, "lightly_multiview_batch.png")
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close()
 
-    print(f"Saved visualization to {save_path}")
+class ImageSaverCallback(pl.Callback):
+    def __init__(self, output_dir="saved_images", every_n_steps=100):
+        """
+        Args:
+            output_dir (str): Directory to save images.
+            every_n_epochs (int): Save images every n epochs.
+        """
+        super().__init__()
+        self.output_dir = output_dir
+        self.every_n_steps = every_n_steps
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        """Save images from the batch at the end of each epoch."""
+        """Save images every n training steps."""
+        
+        if trainer.global_step % self.every_n_steps != 0:
+            return
+
+        # Assuming batch contains (views, targets, filenames)
+        plot_first_batch(batch,self.output_dir)
+        if trainer.logger:
+            trainer.logger.log_image(key = "Batch viz", images =[os.path.join(self.output_dir, "lightly_multiview_batch.png")] )

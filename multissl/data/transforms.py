@@ -26,14 +26,19 @@ class GaussianNoise:
         return img
 
 class UIntToFloat:
-    """Convert NumPy array (H, W, C) to PyTorch tensor (C, H, W) and normalize to [0,1]."""
+    """ normalize to [0,1]."""
     def __call__(self, img):
         img = img.astype(np.float32) / 255.0  # Normalize to [0,1]
+        return img
+    
+class Transpose:
+    """ Convert NumPy array (H, W, C) to PyTorch tensor (C, H, W) """
+    def __call__(self, img):
         return img.transpose(2,0,1)
 
 class RandomResizedCrop:
     """Crop and resize a random region of the image."""
-    def __init__(self, size, scale=(0.8, 1.0)):
+    def __init__(self, size, scale=(0.5, 1.0)):
         self.size = size
         self.scale = scale
 
@@ -56,7 +61,28 @@ class RandomHorizontalFlip:
         if random.random() < self.p:
             return np.flip(img, axis=1).copy()  # Horizontal flip
         return img
+    
+class RandomSpectralShift:
+    """Randomly shift spectral bands slightly to simulate sensor noise."""
+    def __init__(self, max_shift=0.1):
+        self.max_shift = max_shift
 
+    def __call__(self, img):
+        shift = np.random.uniform(-self.max_shift, self.max_shift, size=(img.shape[2],))
+        return np.clip(img + shift, 0, 1).astype(np.float32)  # Ensure the pixel values stay within [0, 1]
+
+class RandomBrightness:
+    """Randomly adjust the brightness of the image."""
+    def __init__(self, brightness_factor=0.1, p=0.5):
+        self.brightness_factor = brightness_factor
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            factor = 1 + np.random.uniform(-self.brightness_factor, self.brightness_factor)
+            return np.clip(img * factor, 0, 1).astype(np.float32)
+        return img
+    
 class RandomVerticalFlip:
     """Randomly flip the image vertically."""
     def __init__(self, p=0.5):
@@ -82,17 +108,19 @@ class ToTensor(object):
 def get_transform(args):
     img_size = args.input_size
     base =  [
-            RandomResizedCrop(size=img_size, scale=(0.2, 1.0)),  # Modify input_size as needed
+            RandomResizedCrop(size=img_size, scale=(0.5, 1)),  # Modify input_size as needed
             RandomHorizontalFlip(p=0.5),
             RandomVerticalFlip(p=0.5),
         ]
     
-    if args.gaussian_blur:
-        base.append(GaussianBlur(kernel_size=21))
+    base.append(GaussianBlur(kernel_size=5))
 
     base.append(GaussianNoise(std=5))  # Adjusted for 0-255 range
     base.append(UIntToFloat()) # Convert to PyTorch tensor & normalize to [0,1])
-    base.append(ToTensor())
+    base.append(RandomBrightness()) # multiply x
+    base.append(RandomSpectralShift()) # add/subtract x
+    base.append(Transpose()) # Set correct chw for tensor
+    base.append(ToTensor())# To torch
     pipeline = transforms.Compose(base)
     
     return pipeline

@@ -11,12 +11,13 @@ from data import get_transform, tifffile_loader
 
 from models import build_model
 import pytorch_lightning as pl
-#from plots import plot_first_batch
+from plots import ImageSaverCallback
 import torch
 
 from lightly.data import LightlyDataset
 from lightly.transforms.multi_view_transform import MultiViewTransform
-
+import pytorch_lightning as pl
+import torch
 
 def get_args():
     parser = argparse.ArgumentParser(description="Self-Supervised Learning with Lightly AI")
@@ -35,20 +36,20 @@ def get_args():
     parser.add_argument("--proj_dim", type=int, default=256, help="Projection head dimension")
     parser.add_argument("--pred_dim", type=int, default=128, help="Prediction head dimension")
     
+
     # Training Hyperparameters
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=0.125, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs")
+    parser.add_argument("--lr", type=float, default=0.02, help="Learning rate")
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum for optimizer")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--dataset_size", type=int, default = 1_000_000, help = "Dataset size, overridden after dataloading" )
+    parser.add_argument("--num_views", type = int, default = 3, help = "Number of augmentation views to feed the SSL, FastSIAM found 3 to be best")
 
-    # Augmentation Settings
-    parser.add_argument("--gaussian_blur", action="store_true", help="Apply Gaussian blur in augmentation")
  
     # Miscellaneous
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training")
-    parser.add_argument("--log_every", type=int, default=5, help="How many epochs between save")
-
+    parser.add_argument("--save_every", type=int, default=1000, help="How many stepss between save")
     args = parser.parse_args()
     return args
 
@@ -60,9 +61,9 @@ def main():
 
     # Create a multiview transform that returns two different augmentations of each image.
     transform_multispectral = get_transform(args)
-    transform_ms = MultiViewTransform(transforms=[transform_multispectral,
-                                                transform_multispectral,
-                                                transform_multispectral])
+    tfs = [transform_multispectral for i in range(args.num_views)]
+
+    transform_ms = MultiViewTransform(transforms=tfs)
 
     # Create a dataset from your image folder.
     dataset_train_ms = LightlyDataset(
@@ -73,6 +74,7 @@ def main():
 
     length_dataset = len(dataset_train_ms)
     print("Loaded dataset, dataset size: "+ str(length_dataset))
+    args.dataset_size = length_dataset
 
 
     # Step 5: Load FastSiam Model with 4-channel support
@@ -82,16 +84,18 @@ def main():
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath="checkpoints/",
-        filename="{args.ssl_method}-{epoch:02d}-{train_loss_ssl:.4f}",
+        filename="{fs}-{epoch:02d}-{step:02d}-{train_loss_ssl:.4f}",
         save_top_k=3,  # Save the 3 best models
         monitor="train_loss_ssl",
         mode="min",  # Save based on lowest loss
-        save_last=True  # Also save the latest model
+        save_last=True,  # Also save the latest model
+        every_n_train_steps = args.save_every
     )
-    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
+    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval = "step")
+
+    im_monitor = ImageSaverCallback()
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    # every 10 epochs we save
 
     wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
 
@@ -110,13 +114,15 @@ def main():
     trainer = pl.Trainer(max_epochs=args.epochs, 
                         devices=1, 
                         accelerator=accelerator,
-                        log_every_n_steps=args.log_every,
-                        callbacks=[checkpoint_callback, lr_monitor],
+                        callbacks=[lr_monitor, im_monitor,checkpoint_callback],
                         logger = wandb_logger,
-                        limit_train_batches= length_dataset/2,
-                        strategy = "auto" )
+                        strategy = "auto",
+                        log_every_n_steps= 1 )
+    
 
     trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
+    
+
 
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("high") 
