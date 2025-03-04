@@ -50,6 +50,8 @@ def get_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training")
     parser.add_argument("--save_every", type=int, default=1000, help="How many stepss between save")
+    parser.add_argument("--checkpoint_path", type=str, default=None, help = "Path for resuming from checkpoint")
+    
     args = parser.parse_args()
     return args
 
@@ -120,7 +122,7 @@ def main():
                         log_every_n_steps= 1 )
     
 
-    trainer.fit(model=model, train_dataloaders=dataloader_train_ms)
+    trainer.fit(model=model, train_dataloaders=dataloader_train_ms, ckpt_path=args.checkpoint_path)
     
 
 
