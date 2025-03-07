@@ -20,6 +20,92 @@ class Flatten(nn.Module):
     """Simple module to flatten from [B, C, H, W] -> [B, C*H*W] or [B, C, 1, 1] -> [B, C]"""
     def forward(self, x):
         return x.flatten(start_dim=1)
+
+class ResNetFeatureExtractor(nn.Module):
+    """
+    Properly extract features from a ResNet backbone at different layers
+    """
+    def __init__(self, resnet):
+        super().__init__()
+        # Store the components we need
+        self.conv1 = resnet.conv1
+        self.bn1 = resnet.bn1
+        self.relu = resnet.relu
+        self.maxpool = resnet.maxpool
+        
+        # Store the blocks
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
+        
+        # Add adaptive pooling to ensure correct output size
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Flatten for output
+        self.flatten = Flatten()
+        
+        # Store the expected output dimensions for each layer
+        self.feature_dims = {
+            'conv1': self.conv1.out_channels,  # Typically 64
+            'layer1': self._get_layer_out_channels(self.layer1),  # 64 for ResNet18, 256 for ResNet50
+            'layer2': self._get_layer_out_channels(self.layer2),  # 128 for ResNet18, 512 for ResNet50
+            'layer3': self._get_layer_out_channels(self.layer3),  # 256 for ResNet18, 1024 for ResNet50
+            'layer4': self._get_layer_out_channels(self.layer4),  # 512 for ResNet18, 2048 for ResNet50
+        }
+    
+    def _get_layer_out_channels(self, layer):
+        """Get the output channels for a layer by looking at its last block"""
+        if hasattr(layer, 'conv3'):  # For bottleneck blocks (ResNet50+)
+            return layer[-1].conv3.out_channels
+        else:  # For basic blocks (ResNet18/34)
+            return layer[-1].conv2.out_channels
+    
+    def forward(self, x):
+        features = {}
+        
+        # Initial processing
+        x = self.conv1(x)  # 64 channels
+        x = self.bn1(x)
+        x = self.relu(x)
+        features['conv1'] = x
+        
+        x = self.maxpool(x)
+        
+        # Process through blocks
+        x = self.layer1(x)
+        features['layer1'] = x
+        
+        x = self.layer2(x)
+        features['layer2'] = x
+        
+        x = self.layer3(x)
+        features['layer3'] = x
+        
+        x = self.layer4(x)
+        features['layer4'] = x
+        
+        # Average pool and then flatten output
+        x = self.avgpool(x)
+        features['flat'] = self.flatten(x)
+        
+        return features
+    
+    def backbone_forward(self, x):
+        """Run a complete forward pass and return only the final flattened features"""
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        
+        # Apply average pooling to get consistent feature dimensions
+        x = self.avgpool(x)
+        return self.flatten(x)
     
 class FastSiam(pl.LightningModule):
     def __init__(self, 
@@ -39,24 +125,17 @@ class FastSiam(pl.LightningModule):
         # Load backbone dynamically based on user input
         if backbone == "resnet18":
             resnet = torchvision.models.resnet18(weights=None)
-            backbone_dim = 512
             self._modify_resnet_for_4_channels(resnet, in_channels)
-
-            # Remove final FC layer and store the feature extractor
-            modules = list(resnet.children())[:-1]
-            modules.append(Flatten())
-            self.backbone = nn.Sequential(*modules)
-
+            self.feature_extractor = ResNetFeatureExtractor(resnet)
+            backbone_dim = 512  # ResNet18 final output dimension
+            self.using_vit= False
 
         elif backbone == "resnet50":
             resnet = torchvision.models.resnet50(weights=None)
-            backbone_dim = 2048
             self._modify_resnet_for_4_channels(resnet, in_channels)
-
-            # Remove final FC layer and store the feature extractor
-            modules = list(resnet.children())[:-1]
-            modules.append(Flatten())
-            self.backbone = nn.Sequential(*modules)
+            self.feature_extractor = ResNetFeatureExtractor(resnet)
+            backbone_dim = 2048  # ResNet50 final output dimension
+            self.using_vit= False
 
         elif backbone =="vit-s":
             from timm import create_model
@@ -69,9 +148,24 @@ class FastSiam(pl.LightningModule):
             )
             backbone_dim = 384
             self.backbone = vit
+            self.using_vit= True
+            
+        elif backbone == "swin-tiny":
+            from timm import create_model
+            
+            swin = create_model(
+                "swin_tiny_patch4_window7_224",
+                pretrained=False,
+                in_chans=in_channels,
+                num_classes=0
+            )
+            backbone_dim = 768  # Output dimension for swin_tiny
+            self.backbone = swin
+            self.using_vit= True
         else:
             raise ValueError("Unsupported backbone. Choose resnet18 or resnet50.")
-
+        # Store if we're using a ViT or ResNet
+        
 
         # Projection and Prediction heads
         self.projection_head = SimSiamProjectionHead(backbone_dim, hidden_dim, proj_dim)
@@ -111,11 +205,23 @@ class FastSiam(pl.LightningModule):
 
     def forward(self, x):
         """Forward pass for FastSiam"""
-        f = self.backbone(x)
+        if self.using_vit:
+            f = self.backbone(x)
+        else:
+            f = self.feature_extractor.backbone_forward(x)
+        
         z = self.projection_head(f)
         p = self.prediction_head(z)
         z = z.detach()
         return z, p
+    
+    def extract_features(self, x):
+        """Extract intermediate features from the backbone"""
+        if self.using_vit:
+            # For ViT, we don't have intermediate features in the same way
+            return {'final': self.backbone(x)}
+        else:
+            return self.feature_extractor(x)
 
     def training_step(self, batch, batch_idx):
         """Compute the SSL loss"""

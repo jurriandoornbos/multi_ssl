@@ -8,3 +8,4 @@
 
 from .loader import tifffile_loader
 from .transforms import get_transform
+from .mask_loader import SegmentationDataset

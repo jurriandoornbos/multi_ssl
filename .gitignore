@@ -1,6 +1,8 @@
 # user defined
 wandb
 checkpoints*
+dataset
+notebooks/segmentation_checkpoints
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

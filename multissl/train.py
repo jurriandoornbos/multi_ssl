@@ -30,7 +30,7 @@ def get_args():
     
     # Self-Supervised Learning Model
     parser.add_argument("--in_channels", type=int, default = 4, help = "Number of input channels of the image")
-    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s"], help="Backbone model for SSL")
+    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s", "swin-tiny"], help="Backbone model for SSL")
     parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["simclr", "simsiam", "fastsiam"], help="SSL method")
     parser.add_argument("--hidden_dim", type=int, default=2048, help="Hidden layer dimension")
     parser.add_argument("--proj_dim", type=int, default=256, help="Projection head dimension")
