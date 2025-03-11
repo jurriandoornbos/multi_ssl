@@ -72,13 +72,8 @@ Also implement with semi-heavy augmentations?
 
 Something with an EMA adapter? student-teacher vibe
 
-
-
-
-
-
-# Implement FastSIAM with new augs?
-
+# Implement FastSIAM with channel dropout augs?
+- Retrain R18, and SWIN model
 
 R50+4.5M head findings?
 
@@ -106,14 +101,4 @@ train on eqv: eval on e score: the same/similar to only e
               eval on all score: better to only e
 
 6. It is all about varying the examples PER class
-
-
-
-  
-
-
-
-
-
-
 
