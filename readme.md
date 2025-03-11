@@ -58,6 +58,28 @@ nahhh
 
 # Findings for vineseg task:
 
+
+
+End of day:
+
+Semi-Supervised with EMA student-teacher seems to fail:
+    Heavy augs too heavy?
+    Hyperparameters?
+
+
+Adapters version works well. Could do with balancing the adapter VS segmenter: overfit on one over the other at the moment.
+Also implement with semi-heavy augmentations?
+
+Something with an EMA adapter? student-teacher vibe
+
+
+
+
+
+
+# Implement FastSIAM with new augs?
+
+
 R50+4.5M head findings?
 
 1. More complex backbone does not yield better performance
@@ -72,6 +94,19 @@ R18+3.5M head findings:
 
 5. Dataset variation is the most important to increase
     HOW to showcase this best?
+Make datasets with 5 samples in the training set: none in the eval set
+    train5_q
+    train5_e
+    train5_v
+
+train on e: eval on e score: 
+            eval on all score:
+
+train on eqv: eval on e score: the same/similar to only e
+              eval on all score: better to only e
+
+6. It is all about varying the examples PER class
+
 
 
   
