@@ -110,3 +110,121 @@ def visualize_predictions(model, dataloader, device, num_samples=4, class_names=
         cbar.set_ticklabels(class_names)
 
     plt.show()
+
+def visualize_batch_semi(batch, num_samples=4, class_names=None, num_classes=None, figsize=(15, 10)):
+    """
+    Visualize a semi-supervised batch containing both labeled and unlabeled data.
+    
+    Args:
+        batch (tuple): Tuple of (labeled_batch, unlabeled_batch) where:
+            - labeled_batch: Tuple of (images, masks) (may be empty tensors)
+            - unlabeled_batch: Tensor of images (may be empty tensor)
+        num_samples (int): Number of samples to visualize from each type
+        class_names (list): List of class names for the mask visualization
+        num_classes (int): Number of classes in the segmentation task
+        figsize (tuple): Figure size
+        
+    Returns:
+        matplotlib.figure.Figure: The created figure
+    """
+    labeled_batch, unlabeled_batch = batch
+    
+    # Check if we have labeled data with non-empty tensors
+    labeled_images, labeled_masks = labeled_batch
+    has_labeled = labeled_images.size(0) > 0
+    
+    # Check if we have unlabeled data with non-empty tensors
+    has_unlabeled = unlabeled_batch.size(0) > 0
+    
+    # Count samples of each type
+    labeled_count = min(num_samples, labeled_images.size(0)) if has_labeled else 0
+    unlabeled_count = min(num_samples, unlabeled_batch.size(0)) if has_unlabeled else 0
+    
+    # Determine number of rows in the plot
+    num_rows = 0
+    if has_labeled:
+        num_rows += 2  # For image and mask
+    if has_unlabeled:
+        num_rows += 1  # For unlabeled images
+    
+    # Determine the total number of columns
+    total_cols = max(labeled_count, unlabeled_count)
+    
+    # Create the figure and axes
+    fig, axes = plt.subplots(num_rows, total_cols, figsize=figsize)
+    
+    # Convert to 2D array of axes if not already
+    if num_rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    # Keep track of the current row
+    current_row = 0
+    
+    # Plot labeled samples if available
+    if has_labeled:
+        images, masks = labeled_batch
+        
+        if num_classes is None:
+            num_classes = masks.max().item() + 1
+        
+        # Choose a colormap based on number of classes
+        if num_classes <= 10:
+            cmap = plt.get_cmap('tab10', num_classes)
+        else:
+            cmap = plt.get_cmap('viridis', num_classes)
+        
+        for i in range(labeled_count):
+            # Get current image and mask
+            image = images[i]
+            mask = masks[i]
+            
+            # Create false color image for visualization
+            false_color = create_false_color_image(image)
+            
+            # Plot image
+            axes[current_row, i].imshow(false_color)
+            axes[current_row, i].set_title(f"Labeled Image {i}")
+            axes[current_row, i].axis('off')
+            
+            # Plot mask
+            im = axes[current_row + 1, i].imshow(mask.cpu().numpy(), cmap=cmap, vmin=0, vmax=num_classes-1)
+            axes[current_row + 1, i].set_title(f"Ground Truth {i}")
+            axes[current_row + 1, i].axis('off')
+        
+        # Fill in empty plots in the labeled rows if needed
+        for i in range(labeled_count, total_cols):
+            axes[current_row, i].axis('off')
+            axes[current_row + 1, i].axis('off')
+        
+        # Add a colorbar for masks if class names are provided
+        if class_names and labeled_count > 0:
+            cbar_ax = fig.add_axes([0.92, 0.6, 0.02, 0.3])  # [left, bottom, width, height]
+            cbar = fig.colorbar(im, cax=cbar_ax)
+            cbar.set_ticks(np.arange(num_classes) + 0.5)
+            cbar.set_ticklabels(class_names)
+        
+        # Update current row
+        current_row += 2
+    
+    # Plot unlabeled samples if available
+    if has_unlabeled:
+        for i in range(unlabeled_count):
+            # Get current image
+            image = unlabeled_batch[i]
+            
+            # Create false color image for visualization
+            false_color = create_false_color_image(image)
+            
+            # Plot image
+            axes[current_row, i].imshow(false_color)
+            axes[current_row, i].set_title(f"Unlabeled Image {i}")
+            axes[current_row, i].axis('off')
+        
+        # Fill in empty plots in the unlabeled row if needed
+        for i in range(unlabeled_count, total_cols):
+            axes[current_row, i].axis('off')
+    
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.9)  # Make room for colorbar
+    
+    return fig

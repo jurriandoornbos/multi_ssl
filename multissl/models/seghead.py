@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+import timm
 
 class ResNetExtractor(nn.Module):
     def __init__(self, resnet):
@@ -262,13 +263,14 @@ class SegmentationModel(pl.LightningModule):
         num_classes=2, 
         img_size=224,
         lr=1e-4, 
-        weight_decay=1e-5
+        weight_decay=1e-5,
+        class_weights = [1.0,1.0]
     ):
         super().__init__()
         
         self.backbone_type = backbone_type
         self.img_size = img_size
-        
+    
         # Initialize the appropriate backbone
         if backbone_type.startswith("resnet"):
             if backbone_type == "resnet18":
@@ -346,6 +348,7 @@ class SegmentationModel(pl.LightningModule):
         # Training parameters
         self.lr = lr
         self.weight_decay = weight_decay
+        self.class_weights = torch.tensor(class_weights)
         
     def _modify_resnet_for_4_channels(self, resnet, in_channels):
         """Modifies the first ResNet conv layer to accept multi-channel input."""
@@ -416,7 +419,8 @@ class SegmentationModel(pl.LightningModule):
         features = self.feature_extractor(x)
         segmentation_map = self.seg_head(features)
         return segmentation_map
-    def dice_loss(self, outputs, targets, smooth=1.0):
+    
+    def dice_loss(self, outputs, targets, smooth=1.0, weight = torch.tensor([1.0,1.0])):
         num_classes = outputs.size(1)
         
         # One-hot encode targets
@@ -432,20 +436,19 @@ class SegmentationModel(pl.LightningModule):
         dice_score = (2.0 * intersection + smooth) / (union + smooth)
         
         # Focus more on vine class (class 1)
-        class_weights = torch.tensor([0.5, 1.5], device=outputs.device)
-        weighted_dice = dice_score * class_weights
+
+        weighted_dice = dice_score * weight.to(outputs.device)
         
         return 1.0 - weighted_dice.mean()
         
     def combined_loss(self, outputs, targets, ce_weight=0.5, dice_weight=0.5):
         # Define class weights for CE loss
-        class_weights = torch.tensor([1.0, 3.0], device=outputs.device)
-        
+        cw = self.class_weights.to(outputs.device)
         # Calculate CE loss
-        ce_loss = F.cross_entropy(outputs, targets, weight=class_weights)
+        ce_loss = F.cross_entropy(outputs, targets, weight=cw)
         
         # Calculate Dice loss
-        dice = self.dice_loss(outputs, targets)
+        dice = self.dice_loss(outputs, targets, weight = cw)
         
         # Combine losses
         return ce_weight * ce_loss + dice_weight * dice
@@ -459,7 +462,7 @@ class SegmentationModel(pl.LightningModule):
         loss = self.combined_loss(logits, masks)
         
         # Log metrics
-        self.log("train_loss", loss, on_step = True, prog_bar=True)
+        self.log("train_loss", loss, on_step = True, on_epoch =True, prog_bar=True)
         
         return loss
     
@@ -494,14 +497,14 @@ class SegmentationModel(pl.LightningModule):
             mode='min', 
             factor=0.5, 
             patience=5,
-            verbose=True
+
         )
         
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",
+                "monitor": "train_loss",
                 "interval": "epoch"
             }
         }

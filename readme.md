@@ -47,9 +47,38 @@ python multissl/train.py --input_dir ../msdata/data/chipped_336 --num_workers 0
 python multissl/train.py --input_dir ../msdata/data/chipped_512 --num_workers 0 --backbone swin-tiny --epochs 2
 
 # Run a comparison of various SSL methods?
+nahhh
 1. FastSiam
-2. SimSiam
-3. MoCo
-4. AIM
-5. MAE
+
+# Variation in backbone:
+1. Resnet18 (11M) 
+2. Resnet50 (22M)
+3. Swin TF (33M)
+
+
+# Findings for vineseg task:
+
+R50+4.5M head findings?
+
+1. More complex backbone does not yield better performance
+
+R18+3.5M head findings:
+
+2. Pretraining does not increase any-shot test accuracy compared to End-to-End training
+
+3. Pretraining increases stability in training, the frozen backend has already found a non-overfitting optimum
+
+4. Pretraining does not increase generalization of accuracy
+
+5. Dataset variation is the most important to increase
+    HOW to showcase this best?
+
+
+  
+
+
+
+
+
+
 
