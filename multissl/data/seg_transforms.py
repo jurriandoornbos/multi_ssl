@@ -121,58 +121,64 @@ class SafeRandomResizedCrop:
             raise TypeError(f"Unsupported image type: {type(img)}")
             
     def _resize_numpy(self, img, size):
-        """Resize using numpy (no cv2)"""
-        h, w = img.shape[:2]
+        """
+        Fast image resize using NumPy vectorized operations.
+        
+        Args:
+            img: numpy array of shape (H, W, C)
+            size: tuple of (target_height, target_width)
+            
+        Returns:
+            Resized image as numpy array
+        """
+        src_h, src_w = img.shape[:2]
         target_h, target_w = size
         
-        # For masks (2D arrays), use nearest neighbor interpolation
-        if len(img.shape) == 2:
-            resized = np.zeros((target_h, target_w), dtype=img.dtype)
-            h_ratio = h / target_h
-            w_ratio = w / target_w
-            
-            for i in range(target_h):
-                for j in range(target_w):
-                    src_i = min(h - 1, int(i * h_ratio))
-                    src_j = min(w - 1, int(j * w_ratio))
-                    resized[i, j] = img[src_i, src_j]
-            
-            return resized
+        # Calculate ratios
+        h_ratio = src_h / target_h
+        w_ratio = src_w / target_w
         
-        # For images (3D arrays), use bilinear interpolation
-        else:
-            resized = np.zeros((target_h, target_w, img.shape[2]), dtype=img.dtype)
-            h_ratio = h / target_h
-            w_ratio = w / target_w
-            
-            for i in range(target_h):
-                for j in range(target_w):
-                    # Source coordinates
-                    src_i = i * h_ratio
-                    src_j = j * w_ratio
-                    
-                    # Get the four surrounding pixels
-                    i0 = min(h - 1, int(np.floor(src_i)))
-                    i1 = min(h - 1, i0 + 1)
-                    j0 = min(w - 1, int(np.floor(src_j)))
-                    j1 = min(w - 1, j0 + 1)
-                    
-                    # Calculate interpolation weights
-                    di = src_i - i0
-                    dj = src_j - j0
-                    
-                    # Bilinear interpolation
-                    w00 = (1 - di) * (1 - dj)
-                    w01 = (1 - di) * dj
-                    w10 = di * (1 - dj)
-                    w11 = di * dj
-                    
-                    resized[i, j] = (w00 * img[i0, j0] + 
-                                     w01 * img[i0, j1] + 
-                                     w10 * img[i1, j0] + 
-                                     w11 * img[i1, j1])
-            
-            return resized
+        # Create coordinate grids for the target image
+        y_coords = np.arange(target_h).reshape(-1, 1) * h_ratio
+        x_coords = np.arange(target_w).reshape(1, -1) * w_ratio
+        
+        # Floor and ceiling coordinates
+        y0 = np.floor(y_coords).astype(np.int32)
+        y1 = np.minimum(y0 + 1, src_h - 1)
+        x0 = np.floor(x_coords).astype(np.int32)
+        x1 = np.minimum(x0 + 1, src_w - 1)
+        
+        # Calculate interpolation weights
+        y_weights = (y_coords - y0).astype(np.float32)
+        x_weights = (x_coords - x0).astype(np.float32)
+        
+        # Reshape for broadcasting
+        y_weights = y_weights.reshape(target_h, 1, 1)
+        x_weights = x_weights.reshape(1, target_w, 1)
+        
+        # Get the four corner values for bilinear interpolation
+        # Access all pixels at once using advanced indexing
+        img_flat = img.reshape(-1, img.shape[2])
+        
+        # Flattened indices for the four corners
+        top_left_idx = y0 * src_w + x0
+        top_right_idx = y0 * src_w + x1
+        bottom_left_idx = y1 * src_w + x0
+        bottom_right_idx = y1 * src_w + x1
+        
+        # Get values for the four corners
+        top_left = img_flat[top_left_idx.flatten()].reshape(target_h, target_w, -1)
+        top_right = img_flat[top_right_idx.flatten()].reshape(target_h, target_w, -1)
+        bottom_left = img_flat[bottom_left_idx.flatten()].reshape(target_h, target_w, -1)
+        bottom_right = img_flat[bottom_right_idx.flatten()].reshape(target_h, target_w, -1)
+        
+        # Bilinear interpolation
+        top = top_left * (1 - x_weights) + top_right * x_weights
+        bottom = bottom_left * (1 - x_weights) + bottom_right * x_weights
+        result = top * (1 - y_weights) + bottom * y_weights
+        
+        return result
+
 
 class SafeUIntToFloat:
     def __call__(self, img):
@@ -182,26 +188,6 @@ class SafeUIntToFloat:
         elif isinstance(img, torch.Tensor):
             if img.max() > 1.0:
                 return img.float() / 255.0
-        return img
-
-class SafeGaussianNoise:
-    def __init__(self, mean=0, std=0.1, p=0.5):
-        self.mean = mean
-        self.std = std
-        self.p = p
-        
-    def __call__(self, img):
-        if random.random() >= self.p:
-            return img
-            
-        if isinstance(img, np.ndarray):
-            noise = np.random.normal(self.mean, self.std, img.shape).astype(img.dtype)
-            noisy_img = img + noise
-            return np.clip(noisy_img, 0, 1)
-        elif isinstance(img, torch.Tensor):
-            noise = torch.randn_like(img) * self.std + self.mean
-            noisy_img = img + noise
-            return torch.clamp(noisy_img, 0, 1)
         return img
 
 class CustomChannelDropout:
@@ -343,6 +329,39 @@ class Transpose:
             return img.permute(2, 0, 1)
         return img
 
+class SafeGaussianNoise:
+    """
+    Fast implementation of Gaussian noise addition that follows the exact pattern:
+    noise = np.random.normal(0, self.noise_std, img_np.shape).astype(np.float32)
+    img_np = np.clip(img_np + noise, 0, 1)
+    
+    Adapted to handle both NumPy arrays and PyTorch tensors efficiently.
+    """
+    def __init__(self, mean=0, std=0.1, p=0.5):
+        self.mean = mean
+        self.std = std
+        self.p = p
+    
+    def __call__(self, img):
+        # Early exit based on probability
+        if random.random() >= self.p:
+            return img
+        
+        # Handle NumPy arrays
+        if isinstance(img, np.ndarray):
+            # Generate noise following the exact pattern requested
+            noise = np.random.normal(self.mean, self.std, img.shape).astype(np.float32)
+            return np.clip(img + noise, 0, 1)
+            
+        # Handle PyTorch tensors
+        elif isinstance(img, torch.Tensor):
+            # Generate equivalent noise for PyTorch tensors
+            noise = torch.randn_like(img, dtype=torch.float32) * self.std + self.mean
+            return torch.clamp(img + noise, 0, 1)
+        
+        # Return unchanged for any other type
+        return img
+    
 class JointTransform:
     """
     Applies the same spatial transformations to both image and mask.
@@ -496,61 +515,96 @@ class JointTransform:
         return img_resized
     
     def _resize_img(self, img, size):
-        """Resize image using bilinear interpolation (numpy implementation)"""
-        h, w = img.shape[:2]
+        """
+        Fast image resize using NumPy vectorized operations.
+        
+        Args:
+            img: numpy array of shape (H, W, C)
+            size: tuple of (target_height, target_width)
+            
+        Returns:
+            Resized image as numpy array
+        """
+        src_h, src_w = img.shape[:2]
         target_h, target_w = size
         
-        # For images, use bilinear interpolation
-        resized = np.zeros((target_h, target_w, img.shape[2]), dtype=img.dtype)
-        h_ratio = h / target_h
-        w_ratio = w / target_w
+        # Calculate ratios
+        h_ratio = src_h / target_h
+        w_ratio = src_w / target_w
         
-        for i in range(target_h):
-            for j in range(target_w):
-                # Source coordinates
-                src_i = i * h_ratio
-                src_j = j * w_ratio
-                
-                # Get the four surrounding pixels
-                i0 = min(h - 1, int(np.floor(src_i)))
-                i1 = min(h - 1, i0 + 1)
-                j0 = min(w - 1, int(np.floor(src_j)))
-                j1 = min(w - 1, j0 + 1)
-                
-                # Calculate interpolation weights
-                di = src_i - i0
-                dj = src_j - j0
-                
-                # Bilinear interpolation
-                w00 = (1 - di) * (1 - dj)
-                w01 = (1 - di) * dj
-                w10 = di * (1 - dj)
-                w11 = di * dj
-                
-                resized[i, j] = (w00 * img[i0, j0] + 
-                                w01 * img[i0, j1] + 
-                                w10 * img[i1, j0] + 
-                                w11 * img[i1, j1])
+        # Create coordinate grids for the target image
+        y_coords = np.arange(target_h).reshape(-1, 1) * h_ratio
+        x_coords = np.arange(target_w).reshape(1, -1) * w_ratio
         
-        return resized
-    
+        # Floor and ceiling coordinates
+        y0 = np.floor(y_coords).astype(np.int32)
+        y1 = np.minimum(y0 + 1, src_h - 1)
+        x0 = np.floor(x_coords).astype(np.int32)
+        x1 = np.minimum(x0 + 1, src_w - 1)
+        
+        # Calculate interpolation weights
+        y_weights = (y_coords - y0).astype(np.float32)
+        x_weights = (x_coords - x0).astype(np.float32)
+        
+        # Reshape for broadcasting
+        y_weights = y_weights.reshape(target_h, 1, 1)
+        x_weights = x_weights.reshape(1, target_w, 1)
+        
+        # Get the four corner values for bilinear interpolation
+        # Access all pixels at once using advanced indexing
+        img_flat = img.reshape(-1, img.shape[2])
+        
+        # Flattened indices for the four corners
+        top_left_idx = y0 * src_w + x0
+        top_right_idx = y0 * src_w + x1
+        bottom_left_idx = y1 * src_w + x0
+        bottom_right_idx = y1 * src_w + x1
+        
+        # Get values for the four corners
+        top_left = img_flat[top_left_idx.flatten()].reshape(target_h, target_w, -1)
+        top_right = img_flat[top_right_idx.flatten()].reshape(target_h, target_w, -1)
+        bottom_left = img_flat[bottom_left_idx.flatten()].reshape(target_h, target_w, -1)
+        bottom_right = img_flat[bottom_right_idx.flatten()].reshape(target_h, target_w, -1)
+        
+        # Bilinear interpolation
+        top = top_left * (1 - x_weights) + top_right * x_weights
+        bottom = bottom_left * (1 - x_weights) + bottom_right * x_weights
+        result = top * (1 - y_weights) + bottom * y_weights
+        
+        return result
+
     def _resize_mask(self, mask, size):
-        """Resize mask using nearest neighbor interpolation (numpy implementation)"""
-        h, w = mask.shape[:2]
+        """
+        Fast nearest-neighbor interpolation for masks using NumPy.
+        
+        Args:
+            mask: numpy array of shape (H, W)
+            size: tuple of (target_height, target_width)
+            
+        Returns:
+            Resized mask as numpy array
+        """
+        src_h, src_w = mask.shape[:2]
         target_h, target_w = size
         
-        # For masks, use nearest neighbor interpolation
-        resized = np.zeros((target_h, target_w), dtype=mask.dtype)
-        h_ratio = h / target_h
-        w_ratio = w / target_w
+        # Calculate coordinates in the source image
+        y_ratio = src_h / target_h
+        x_ratio = src_w / target_w
         
-        for i in range(target_h):
-            for j in range(target_w):
-                src_i = min(h - 1, int(i * h_ratio))
-                src_j = min(w - 1, int(j * w_ratio))
-                resized[i, j] = mask[src_i, src_j]
+        y_src = np.floor(np.arange(target_h) * y_ratio).astype(np.int32)
+        x_src = np.floor(np.arange(target_w) * x_ratio).astype(np.int32)
         
-        return resized
+        # Ensure we don't go out of bounds
+        y_src = np.minimum(y_src, src_h - 1)
+        x_src = np.minimum(x_src, src_w - 1)
+        
+        # Use meshgrid to create 2D coordinate arrays
+        y_coords, x_coords = np.meshgrid(y_src, x_src, indexing='ij')
+        
+        # Index into the source mask
+        result = mask[y_coords, x_coords]
+        
+        return result
 
 class JointWeakAugmentation:
     """Weak augmentation pipeline for teacher models"""

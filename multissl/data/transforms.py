@@ -97,7 +97,7 @@ def get_transform(args = None, img_size = None):
     base.append(CustomChannelDropout(drop_prob=0.1, channels_to_drop=1))
     
     # Add Gaussian noise
-    base.append(SafeGaussianNoise(std=0.05))  # Adjusted for 0-1 range
+    #base.append(SafeGaussianNoise(std=0.05))  # Adjusted for 0-1 range
     
     # Convert to float in 0-1 range
     base.append(SafeUIntToFloat())
