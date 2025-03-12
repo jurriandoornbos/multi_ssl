@@ -270,7 +270,7 @@ class SegmentationModel(pl.LightningModule):
         
         self.backbone_type = backbone_type
         self.img_size = img_size
-    
+        self.num_classes = num_classes
         # Initialize the appropriate backbone
         if backbone_type.startswith("resnet"):
             if backbone_type == "resnet18":
