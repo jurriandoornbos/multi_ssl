@@ -349,16 +349,19 @@ class MeanTeacherSegmentation(pl.LightningModule):
         )
         
         # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            max_lr = 1e-2,
-            epochs = self.trainer.max_epochs/10,
+            mode='min',
+            factor=0.5,
+            patience=5,
+            verbose=True
         )
         
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
+                "monitor": "train_total_loss",
                 "interval": "epoch"
             }
         }
