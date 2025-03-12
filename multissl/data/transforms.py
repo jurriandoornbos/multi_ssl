@@ -19,49 +19,11 @@ from .seg_transforms import (
     SafeRandomResizedCrop,
     SafeUIntToFloat,
     SafeGaussianBlur,
-    SafeGaussianNoise,
     CustomChannelDropout,
-    ToTensorSafe
+    ToTensorSafe,
+    RandomBrightness,
+    RandomSpectralShift
 )
-
-class RandomSpectralShift:
-    """Randomly shift spectral bands slightly to simulate sensor noise."""
-    def __init__(self, max_shift=0.1):
-        self.max_shift = max_shift
-
-    def __call__(self, img):
-        if isinstance(img, np.ndarray):
-            shift = np.random.uniform(-self.max_shift, self.max_shift, size=(img.shape[2],))
-            return np.clip(img + shift, 0, 1).astype(np.float32)
-        elif isinstance(img, torch.Tensor):
-            # For tensors in CHW format
-            if img.dim() == 3 and img.shape[0] <= 4:
-                num_channels = img.shape[0]
-                shift = torch.FloatTensor(num_channels).uniform_(-self.max_shift, self.max_shift)
-                # Reshape shift to match the tensor dimensions for broadcasting
-                shift = shift.reshape(-1, 1, 1).to(img.device)
-                return torch.clamp(img + shift, 0, 1)
-            else:
-                # For tensors in HWC format
-                shift = torch.FloatTensor(img.shape[-1]).uniform_(-self.max_shift, self.max_shift)
-                return torch.clamp(img + shift, 0, 1)
-        return img
-
-class RandomBrightness:
-    """Randomly adjust the brightness of the image."""
-    def __init__(self, brightness_factor=0.1, p=0.5):
-        self.brightness_factor = brightness_factor
-        self.p = p
-
-    def __call__(self, img):
-        if random.random() < self.p:
-            if isinstance(img, np.ndarray):
-                factor = 1 + np.random.uniform(-self.brightness_factor, self.brightness_factor)
-                return np.clip(img * factor, 0, 1).astype(np.float32)
-            elif isinstance(img, torch.Tensor):
-                factor = 1 + torch.FloatTensor(1).uniform_(-self.brightness_factor, self.brightness_factor).item()
-                return torch.clamp(img * factor, 0, 1)
-        return img
 
 class Transpose:
     """ Convert NumPy array (H, W, C) to format suitable for PyTorch (C, H, W) """

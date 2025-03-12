@@ -14,7 +14,7 @@ import numpy as np
 from copy import deepcopy
 
 from multissl.models.seghead import SegmentationModel
-
+from multissl.models.lr import CosineAnnealingWarmRestartsDecay
 
 class MeanTeacherSegmentation(pl.LightningModule):
     """
@@ -312,7 +312,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
             teacher_logits = self.teacher(images)
         
         # Calculate validation loss
-        val_loss = F.cross_entropy(teacher_logits, masks)
+        val_loss = F.cross_entropy(teacher_logits, masks, weight = self.class_weights)
         
         # Calculate metrics
         preds = torch.argmax(teacher_logits, dim=1)
@@ -348,20 +348,25 @@ class MeanTeacherSegmentation(pl.LightningModule):
             weight_decay=self.weight_decay
         )
         
-        # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        # Calculate appropriate T_0 (first cycle length)
+        # A common approach is to set it to 10-30% of total epochs
+        T_0 = max(5, int(self.trainer.max_epochs * 0.2))  # At least 5 epochs
+        
+        # Create scheduler with warmup
+        scheduler = CosineAnnealingWarmRestartsDecay(
             optimizer,
-            mode='min',
-            factor=0.5,
-            patience=5,
-            verbose=True
+            T_0=T_0,                   # Length of first cycle
+            T_mult=2,                  # Double cycle length after each restart
+            eta_min=self.lr * 0.01,    # Minimum LR is 1% of base LR
+            warmup_epochs=5,           # 5 epochs of warmup
+            warmup_start_lr=self.lr,  # Start warmup at 10% of base LR
+            decay_factor=0.8           # Decay max LR by 20% each cycle
         )
         
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "train_total_loss",
                 "interval": "epoch"
             }
         }

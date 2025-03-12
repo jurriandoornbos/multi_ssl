@@ -59,10 +59,10 @@ class SafeRandomVerticalFlip:
     def __call__(self, img):
         if random.random() < self.p:
             if isinstance(img, np.ndarray):
-                return np.flip(img, axis=0).copy()
+                return np.flip(img, axis=2).copy()
             elif isinstance(img, torch.Tensor):
                 # Handle tensor properly
-                return img.flip(dims=[0])
+                return img.flip(dims=[2])
             else:
                 # For unknown types, return as is
                 return img
@@ -380,15 +380,15 @@ class JointTransform:
             self.noise_std = 0.05
             self.channel_dropout_p = 0.0
             self.brightness_factor = 0.1
-            self.spectral_shift_p = 0.0
+            self.spectral_shift_p = 0.1
         else:  # strong
             self.crop_scale = (0.5, 1.0)
             self.flip_p = 0.5
             self.noise_p = 0.5
             self.noise_std = 0.1
             self.channel_dropout_p = 0.2
-            self.brightness_factor = 0.2
-            self.spectral_shift_p = 0.5
+            self.brightness_factor = 0.1
+            self.spectral_shift_p = 0.1
     
     def __call__(self, img, mask=None):
         # Convert to numpy for processing if they're tensors
