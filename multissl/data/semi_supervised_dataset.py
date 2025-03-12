@@ -1,85 +1,17 @@
+# Copyright 2025 Jurrian Doornbos
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 import numpy as np
-import torch
 import random
-import cv2
-from torchvision import transforms
+import torch
+
+from .seg_transforms import *
 import os
-
-from .seg_transforms import ToTensorSafe
-
-class JointTransform:
-    """
-    Applies the same spatial transformations to both image and mask.
-    This ensures that spatial correspondence is maintained between them.
-    """
-    def __init__(self, img_size=224, scale=(0.5, 1.0), flip_p=0.5):
-        self.img_size = img_size
-        self.scale = scale
-        self.flip_p = flip_p
-        
-        # Non-spatial transforms for images only
-        self.img_transforms = transforms.Compose([
-            UIntToFloat(),  # Normalize to [0,1]
-        ])
-    
-    def __call__(self, img, mask):
-        # Convert to numpy for processing if they're tensors
-        if isinstance(img, torch.Tensor):
-            img = img.cpu().numpy()
-        if isinstance(mask, torch.Tensor):
-            mask = mask.cpu().numpy()
-            
-        # Make sure image is in HWC format for processing
-        if img.ndim == 3 and img.shape[0] <= 4:  # If in CHW format
-            img = np.transpose(img, (1, 2, 0))
-        
-        # Apply random resized crop to both
-        img, mask = self.random_resized_crop(img, mask)
-        
-        # Apply same random flips to both
-        if random.random() < self.flip_p:
-            img = np.flip(img, axis=1).copy()  # Horizontal flip
-            mask = np.flip(mask, axis=1).copy()
-            
-        if random.random() < self.flip_p:
-            img = np.flip(img, axis=0).copy()  # Vertical flip
-            mask = np.flip(mask, axis=0).copy()
-        
-        # Apply non-spatial transforms to image only
-        img = self.img_transforms(img)
-        
-        # Convert to tensor
-        img = torch.from_numpy(img.transpose(2, 0, 1)).float()  # HWC -> CHW
-        mask = torch.from_numpy(mask).long()
-        
-        return img, mask
-    
-    def random_resized_crop(self, img, mask):
-        h, w = img.shape[0], img.shape[1]
-        scale_factor = random.uniform(self.scale[0], self.scale[1])
-        new_h, new_w = max(1, int(h * scale_factor)), max(1, int(w * scale_factor))
-        
-        # Get random crop coordinates
-        top = random.randint(0, max(0, h - new_h))
-        left = random.randint(0, max(0, w - new_w))
-        
-        # Apply same crop to both image and mask
-        img_cropped = img[top:top + new_h, left:left + new_w]
-        mask_cropped = mask[top:top + new_h, left:left + new_w]
-        
-        # Resize both to target size
-        img_resized = cv2.resize(img_cropped, (self.img_size, self.img_size), interpolation=cv2.INTER_LINEAR)
-        mask_resized = cv2.resize(mask_cropped, (self.img_size, self.img_size), interpolation=cv2.INTER_NEAREST)
-        
-        return img_resized, mask_resized
-
-
-class UIntToFloat:
-    """ Normalize to [0,1]."""
-    def __call__(self, img):
-        if img.dtype == np.uint8 or img.max() > 1.0:
-            img = img.astype(np.float32) / 255.0
-        return img
 
 
 # Modified SemiSupervisedSegmentationDataset with corrected transform handling
@@ -102,7 +34,7 @@ class SemiSupervisedSegmentationDataset(torch.utils.data.Dataset):
         # Create default transforms if none provided
         self.joint_transform = joint_transform if joint_transform else JointTransform(img_size=img_size)
         self.unlabeled_transform = unlabeled_transform if unlabeled_transform else transforms.Compose([
-            UIntToFloat(),
+            SafeUIntToFloat(),
             ToTensorSafe(),
         ])
         

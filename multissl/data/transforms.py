@@ -73,14 +73,19 @@ class Transpose:
             return img.permute(2, 0, 1)
         return img
 
-def get_transform(args):
+def get_transform(args = None, img_size = None):
     """
     Builds a transform pipeline for FastSiam using safer transforms
     and adding channel dropout for more robust augmentation.
     """
-    img_size = args.input_size
+    if args:
+        img_size = args.input_size
+    if not args:
+        img_size = img_size
+    else:
+        raise ValueError("Please provide either args or img_size")
     base = [
-        SafeRandomResizedCrop(size=img_size, scale=(0.2, 1)),
+        SafeRandomResizedCrop(size=img_size, scale=(0.5, 1)),
         SafeRandomHorizontalFlip(p=0.5),
         SafeRandomVerticalFlip(p=0.5),
     ]
@@ -89,7 +94,7 @@ def get_transform(args):
     base.append(SafeGaussianBlur(kernel_size=5))
     
     # Add channel dropout for improved robustness
-    base.append(CustomChannelDropout(drop_prob=0.2, channels_to_drop=1))
+    base.append(CustomChannelDropout(drop_prob=0.1, channels_to_drop=1))
     
     # Add Gaussian noise
     base.append(SafeGaussianNoise(std=0.05))  # Adjusted for 0-1 range
