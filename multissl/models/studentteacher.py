@@ -162,44 +162,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
         
         return mixed_batch, lam, mix_indexes
     
-    def consistency_loss(self, student_logits, teacher_logits, confidence_mask=None):
-        """
-        Calculate consistency loss between student and teacher predictions
-        
-        Args:
-            student_logits: Predictions from student model
-            teacher_logits: Predictions from teacher model
-            confidence_mask: Optional binary mask of confident predictions
-            
-        Returns:
-            Consistency loss
-        """
-        # Get teacher probabilities and detach
-        teacher_probs = F.softmax(teacher_logits, dim=1).detach()
-        
-        # Get confidence scores from teacher
-        confidence, _ = torch.max(teacher_probs, dim=1)
-        
-        # Create confidence mask if not provided
-        if confidence_mask is None:
-            confidence_mask = (confidence > self.confidence_threshold).float()
-        
-        # KL divergence loss (student learning from teacher distribution)
-        student_log_probs = F.log_softmax(student_logits, dim=1)
-        pixelwise_loss = F.kl_div(
-            student_log_probs, teacher_probs, reduction='none'
-        ).sum(dim=1)
-        
-        # Apply confidence masking
-        if confidence_mask.sum() > 0:
-            # Only consider confident pixels
-            masked_loss = (pixelwise_loss * confidence_mask).sum() / confidence_mask.sum()
-        else:
-            # Fall back to mean reduction if no pixels are confident
-            masked_loss = pixelwise_loss.mean()
-        
-        return masked_loss
-    
+   
     def training_step(self, batch, batch_idx):
         """
         Training step for Mean Teacher model
@@ -219,7 +182,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
             student_logits_l = self.student(labeled_images)
             
             # Calculate supervised loss (CE + Dice)
-            supervised_loss = self.student.combined_loss(
+            supervised_loss = self.student.focal_loss(
                 student_logits_l, labeled_masks
                 
             )
@@ -271,22 +234,26 @@ class MeanTeacherSegmentation(pl.LightningModule):
             
             # Forward mixed unlabeled images through student
             student_logits_u = self.student(mixed_unlabeled)
-            
-            # Calculate consistency loss
-            consistency_loss = self.consistency_loss(
-                student_logits_u, teacher_logits_u, confidence_mask
-            )
+
+            if hasattr(self, 'get_current_confidence_threshold'):
+                current_threshold = self.get_current_confidence_threshold()
+                    
+                focal_loss = self.focal_pseudo_loss(student_logits_u, 
+                                                                teacher_logits_u, threshold = current_threshold)
+            else:
+                focal_loss = self.focal_pseudo_loss(student_logits_u,         
+                                                    teacher_logits_u, threshold = self.confidence_threshold)
             
             # Apply consistency weight with ramp-up
             current_weight = self._get_current_consistency_weight()
-            weighted_consistency_loss = current_weight * consistency_loss
+            weighted_focal_loss = current_weight * focal_loss
             
-            # Add consistency loss to total
-            total_loss += weighted_consistency_loss
+            # Add focal loss to total
+            total_loss += weighted_focal_loss
             
-            # Log consistency loss
-            self.log("train_consistency_loss", consistency_loss)
-            self.log("train_weighted_consistency_loss", weighted_consistency_loss)
+            # Log CPS loss
+            self.log("train_focal_loss", focal_loss)
+            self.log("train_weighted_focal_loss", weighted_focal_loss)
             self.log("train_consistency_weight", current_weight, prog_bar=True)
         
         # Log total loss
@@ -300,8 +267,72 @@ class MeanTeacherSegmentation(pl.LightningModule):
             self.update_teacher()
         
         return total_loss
+          
+    def focal_pseudo_loss(self, student_logits, teacher_logits, gamma=2.0, threshold=0.6):
+        with torch.no_grad():
+            teacher_probs = F.softmax(teacher_logits, dim=1)
+            confidence, pseudo_labels = torch.max(teacher_probs, dim=1)
+            mask = (confidence > threshold).float()
+        
+        # Get student probabilities
+        student_probs = F.softmax(student_logits, dim=1)
+        
+        # Extract the predicted probability for the ground truth class
+        batch_size, num_classes, h, w = student_logits.shape
+        student_pt = torch.gather(student_probs, 1, pseudo_labels.unsqueeze(1)).squeeze(1)
+        
+        # Focal loss formula: -alpha * (1 - pt)^gamma * log(pt)
+        focal_weight = (1 - student_pt).pow(gamma)
+        
+        # Standard cross entropy
+        loss = F.cross_entropy(student_logits, pseudo_labels, reduction='none')
+        
+        # Apply focal weighting and confidence mask
+        weighted_loss = focal_weight * loss * mask
+        
+        if mask.sum() > 0:
+            return weighted_loss.sum() / mask.sum()
+        return loss.mean()
     
+    def consistency_loss(self, student_logits, teacher_logits, confidence_mask=None):
+        """
+        Calculate consistency loss between student and teacher predictions
+        
+        Args:
+            student_logits: Predictions from student model
+            teacher_logits: Predictions from teacher model
+            confidence_mask: Optional binary mask of confident predictions
+            
+        Returns:
+            Consistency loss
+        """
+        # Get teacher probabilities and detach
+        teacher_probs = F.softmax(teacher_logits, dim=1).detach()
+        
+        # Get confidence scores from teacher
+        confidence, pseudo_labels = torch.max(teacher_probs, dim=1)
+        
+        # Create confidence mask if not provided
+        if confidence_mask is None:
+            confidence_mask = (confidence > self.confidence_threshold).float()
+        
+        # BCE divergence loss (student learning from teacher distribution)
+        pixelwise_loss =  F.cross_entropy(student_logits, 
+                                          pseudo_labels, 
+                                          reduction='none',
+                                          weights = self.class_weights.student_logits.device)
+        
+        # Apply confidence masking
+        if confidence_mask.sum() > 0:
+            # Only consider confident pixels
+            masked_loss = (pixelwise_loss * confidence_mask).sum() / confidence_mask.sum()
+        else:
+            # Fall back to mean reduction if no pixels are confident
+            masked_loss = pixelwise_loss.mean()
+        
+        return masked_loss
     
+        
     def validation_step(self, batch, batch_idx):
         """
         Validation step using the teacher model
@@ -316,7 +347,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
             teacher_logits = self.teacher(images)
         
         # Calculate validation loss
-        val_loss = F.cross_entropy(teacher_logits, masks, weight = self.class_weights.to(teacher_logits.device))
+        val_loss = F.cross_entropy(teacher_logits, masks)
         
         # Calculate metrics
         preds = torch.argmax(teacher_logits, dim=1)

@@ -283,277 +283,6 @@ class ResNet18UNet(nn.Module):
         
         return out
 
-class ResNetExtractor(nn.Module):
-    def __init__(self, resnet):
-        super().__init__()
-        # Store the components we need
-        self.conv1 = resnet.conv1
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        
-        # Store the blocks
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-    
-    def forward(self, x):
-        features = {}
-        
-        # Initial processing
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        features['initial'] = x
-        
-        x = self.maxpool(x)
-        
-        # Process through blocks
-        x = self.layer1(x)
-        features['layer1'] = x
-        
-        x = self.layer2(x)
-        features['layer2'] = x
-        
-        x = self.layer3(x)
-        features['layer3'] = x
-        
-        x = self.layer4(x)
-        features['layer4'] = x
-        
-        return features
-
-class SegmentationHead(nn.Module):
-    """
-    Improved Segmentation head with UNet-style decoder path and skip connections
-    that explicitly handles different feature map sizes
-    """
-    def __init__(self, layer1_channels, layer2_channels, layer3_channels, layer4_channels, 
-                 num_classes=2, img_size=224):
-        super().__init__()
-        
-        self.img_size = img_size
-        self.act = nn.ReLU(inplace=True)
-        
-        # Reduce channel dimensions of encoder features, but keep more channels
-        self.reduce1 = nn.Conv2d(layer1_channels, 64, kernel_size=1)  # 1/4 resolution
-        self.reduce2 = nn.Conv2d(layer2_channels, 128, kernel_size=1)  # 1/8 resolution
-        self.reduce3 = nn.Conv2d(layer3_channels, 256, kernel_size=1)  # 1/16 resolution
-        self.reduce4 = nn.Conv2d(layer4_channels, 512, kernel_size=1)  # 1/32 resolution
-        
-        # Decoder path (upsampling + conv)
-        # Layer 4 -> Layer 3
-        self.up4_3 = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True)
-        )
-        self.decode3 = nn.Conv2d(256 + 256, 256, kernel_size=3, padding=1)
-        
-        # Layer 3 -> Layer 2
-        self.up3_2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True)
-        )
-        self.decode2 = nn.Conv2d(128 + 128, 128, kernel_size=3, padding=1)
-        
-        # Layer 2 -> Layer 1
-        self.up2_1 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
-        self.decode1 = nn.Conv2d(64 + 64, 64, kernel_size=3, padding=1)
-        
-        # Final upsampling to original resolution
-        self.final_up = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
-        )
-        
-        # Final classifier
-        self.classifier = nn.Sequential(
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, num_classes, kernel_size=1)
-        )
-        
-    def forward(self, features):
-        """Process features through decoder path with skip connections"""
-        # Extract and reduce features from backbone
-        f1 = self.act(self.reduce1(features['layer1']))  # 1/4 resolution
-        f2 = self.act(self.reduce2(features['layer2']))  # 1/8 resolution
-        f3 = self.act(self.reduce3(features['layer3']))  # 1/16 resolution
-        f4 = self.act(self.reduce4(features['layer4']))  # 1/32 resolution
-        
-        # Decoder path with skip connections (UNet style)
-        # Layer 4 -> Layer 3 with explicit size matching
-        x = self.up4_3(f4)
-        x = F.interpolate(x, size=f3.shape[2:], mode='bilinear', align_corners=False)
-        x = torch.cat([x, f3], dim=1)
-        x = self.act(self.decode3(x))
-        
-        # Layer 3 -> Layer 2 with explicit size matching
-        x = self.up3_2(x)
-        x = F.interpolate(x, size=f2.shape[2:], mode='bilinear', align_corners=False)
-        x = torch.cat([x, f2], dim=1)
-        x = self.act(self.decode2(x))
-        
-        # Layer 2 -> Layer 1 with explicit size matching
-        x = self.up2_1(x)
-        x = F.interpolate(x, size=f1.shape[2:], mode='bilinear', align_corners=False)
-        x = torch.cat([x, f1], dim=1)
-        x = self.act(self.decode1(x))
-        
-        # Final upsampling to original resolution
-        x = self.final_up(x)
-        x = F.interpolate(x, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
-        x = self.classifier(x)
-        
-        return x
-        
-    def _debug_print_shapes(self, features):
-        """Helper method to print feature shapes for debugging"""
-        print(f"layer1: {features['layer1'].shape}")
-        print(f"layer2: {features['layer2'].shape}")
-        print(f"layer3: {features['layer3'].shape}")
-        print(f"layer4: {features['layer4'].shape}")
-        
-        f1 = self.reduce1(features['layer1'])
-        f2 = self.reduce2(features['layer2'])
-        f3 = self.reduce3(features['layer3'])
-        f4 = self.reduce4(features['layer4'])
-        
-        print(f"f1: {f1.shape}")
-        print(f"f2: {f2.shape}")
-        print(f"f3: {f3.shape}")
-        print(f"f4: {f4.shape}")
-
-class PyramidPoolingModule(nn.Module):
-    def __init__(self, in_channels, out_channels, pool_scales=(1, 2, 3, 6)):
-        super().__init__()
-        self.stages = nn.ModuleList()
-        for scale in pool_scales:
-            # For the smallest scale (1x1), use GroupNorm instead of BatchNorm
-            # to avoid the "Expected more than 1 value per channel when training" error
-            if scale == 1:
-                self.stages.append(nn.Sequential(
-                    nn.AdaptiveAvgPool2d(scale),
-                    nn.Conv2d(in_channels, out_channels, kernel_size=1),
-                    nn.GroupNorm(num_groups=min(32, out_channels), num_channels=out_channels),
-                    nn.ReLU(inplace=True)
-                ))
-            else:
-                self.stages.append(nn.Sequential(
-                    nn.AdaptiveAvgPool2d(scale),
-                    nn.Conv2d(in_channels, out_channels, kernel_size=1),
-                    nn.BatchNorm2d(out_channels),
-                    nn.ReLU(inplace=True)
-                ))
-        
-        # Use GroupNorm in the bottleneck for safer training
-        self.bottleneck = nn.Sequential(
-            nn.Conv2d(in_channels + out_channels * len(pool_scales), out_channels, kernel_size=3, padding=1),
-            nn.GroupNorm(num_groups=min(32, out_channels), num_channels=out_channels),
-            nn.ReLU(inplace=True)
-        )
-        
-    def forward(self, x):
-        width, height = x.shape[2], x.shape[3]
-        pyramid_features = [x]
-        
-        for stage in self.stages:
-            feat = stage[0](x)  # pool
-            feat = stage[1:](feat)  # conv, norm, relu
-            feat = F.interpolate(feat, size=(height, width), mode='bilinear', align_corners=True)
-            pyramid_features.append(feat)
-            
-        out = torch.cat(pyramid_features, dim=1)
-        out = self.bottleneck(out)
-        
-        return out
-    
-class UPerHead(nn.Module):
-    def __init__(self, layer1_channels, layer2_channels, layer3_channels, layer4_channels, 
-                 num_classes=2, img_size=224, fpn_out_channels=256, ppm_out_channels=512):
-        super().__init__()
-        layer_channels = {"layer1": layer1_channels,
-                          "layer2": layer2_channels,
-                          "layer3": layer3_channels,
-                          "layer4": layer4_channels}
-        # Store image size for final upsampling
-        self.img_size = img_size
-        
-        # PPM module on the highest-level features
-        self.ppm = PyramidPoolingModule(layer_channels['layer4'], ppm_out_channels)
-        
-        # FPN lateral connections
-        self.lateral_convs = nn.ModuleDict({
-            f'layer{i}': nn.Conv2d(layer_channels[f'layer{i}'], fpn_out_channels, kernel_size=1)
-            for i in range(1, 4)
-        })
-        
-        # FPN output convs
-        self.fpn_convs = nn.ModuleDict({
-            f'layer{i}': nn.Sequential(
-                nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1),
-                nn.GroupNorm(num_groups=min(32, fpn_out_channels), num_channels=fpn_out_channels),
-                nn.ReLU(inplace=True)
-            ) for i in range(1, 4)
-        })
-        
-        # Connect PPM output to FPN
-        self.ppm_conv = nn.Conv2d(ppm_out_channels, fpn_out_channels, kernel_size=1)
-        
-        # Final fusion of all levels
-        self.fusion_conv = nn.Sequential(
-            nn.Conv2d(fpn_out_channels * 4, fpn_out_channels, kernel_size=3, padding=1),
-            nn.GroupNorm(num_groups=min(32, fpn_out_channels), num_channels=fpn_out_channels),
-            nn.ReLU(inplace=True)
-        )
-        
-        # Classifier
-        self.classifier = nn.Conv2d(fpn_out_channels, num_classes, kernel_size=1)
-        
-    def forward(self, features):
-        # Apply PPM to highest level feature
-        ppm_out = self.ppm(features['layer4'])
-        f = self.ppm_conv(ppm_out)
-        
-        # Apply FPN top-down pathway
-        fpn_features = [f]
-        for i in range(3, 0, -1):
-            layer_name = f'layer{i}'
-            feat = features[layer_name]
-            lat = self.lateral_convs[layer_name](feat)
-            
-            # Add upsampled higher-level feature
-            f = F.interpolate(f, size=feat.shape[2:], mode='bilinear', align_corners=True)
-            f = lat + f
-            
-            # Apply output conv
-            fpn_out = self.fpn_convs[layer_name](f)
-            fpn_features.insert(0, fpn_out)  # Insert at beginning to maintain order
-        
-        # Upsample all FPN outputs to the same size (of the largest feature map)
-        output_size = fpn_features[0].shape[2:]
-        for i in range(1, len(fpn_features)):
-            fpn_features[i] = F.interpolate(fpn_features[i], size=output_size, mode='bilinear', align_corners=True)
-        
-        # Fuse all levels
-        fused = torch.cat(fpn_features, dim=1)
-        fused = self.fusion_conv(fused)
-        
-        # Final classifier
-        output = F.interpolate(fused, size=(self.img_size, self.img_size), mode='bilinear', align_corners=True)
-        output = self.classifier(output)
-        
-        return output
-
-
 class HighResolutionHead(nn.Module):
     """
     High-resolution segmentation head inspired by HRNetV2.
@@ -867,6 +596,9 @@ class SegmentationModel(pl.LightningModule):
         
         if backbone_type == "resnet18":
             self.seg_head = ResNet18UNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
+        if backbone_type == "resnet50":
+            self.seg_head = ResNet18UNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
+
 
         else:
             # Initialize segmentation head with correct dimensions
@@ -878,8 +610,7 @@ class SegmentationModel(pl.LightningModule):
                 num_classes=num_classes,
                 img_size=img_size
             )
-        
-        
+               
         
         # Training parameters
         self.lr = lr
@@ -987,15 +718,70 @@ class SegmentationModel(pl.LightningModule):
         dice = self.dice_loss(outputs, targets, weight = cw)
         
         # Combine losses
-        return ce_weight * ce_loss + dice_weight * dice
+        return ce_loss #ce_weight * ce_loss + dice_weight * dice
+    
+    def focal_loss(self, outputs, targets, alpha=0.25, gamma=2.0, reduction='mean'):
+        """
+        Focal Loss implementation for supervised segmentation.
+        
+        Args:
+            outputs: Model predictions (logits) [B, C, H, W]
+            targets: Ground truth labels [B, H, W]
+            alpha: Weighting factor for the rare class
+            gamma: Focusing parameter that reduces the loss for well-classified examples
+            reduction: How to reduce the loss ('mean', 'sum', or 'none')
+        
+        Returns:
+            Focal loss value
+        """
+        # Convert targets to one-hot encoding
+        batch_size, num_classes = outputs.shape[0], outputs.shape[1]
+        one_hot_targets = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
+        
+        # Apply softmax to get class probabilities
+        probs = F.softmax(outputs, dim=1)
+        
+        # Get the probability for the target class
+        pt = torch.sum(probs * one_hot_targets, dim=1)
+        
+        # Compute focal weight
+        focal_weight = (1 - pt).pow(gamma)
+        
+        # Apply alpha weighting - different weight for each class
+        if isinstance(alpha, (list, tuple)):
+            # If alpha is per-class
+            alpha_weight = torch.ones_like(pt)
+            for c in range(num_classes):
+                alpha_weight[targets == c] = alpha[c]
+        else:
+            # Simple binary alpha
+            alpha_weight = torch.ones_like(pt)
+            alpha_weight[targets == 1] = alpha        # Foreground (vine) weight
+            alpha_weight[targets == 0] = 1 - alpha    # Background weight
+        
+        # Apply alpha to focal weight
+        loss = -alpha_weight * focal_weight * torch.log(pt + 1e-8)
+        
+        # Apply reduction
+        if reduction == 'mean':
+            return loss.mean()
+        elif reduction == 'sum':
+            return loss.sum()
+        else:  # 'none'
+            return loss
     
     def training_step(self, batch, batch_idx):
         """Training step with mixed dice, weighted cross-entropy loss"""
         images, masks = batch
         logits = self(images)
 
-        # Dice loss for segmentation
-        loss = self.combined_loss(logits, masks)
+        # Combined dice + cross entropy loss for segmentation
+        #loss = self.combined_loss(logits, masks)
+        # Cross entropy loss
+        #loss = F.cross_entropy(logits, masks)
+        
+        # Focal loss
+        loss = self.focal_loss(logits, masks)
         
         # Log metrics
         self.log("train_loss", loss, on_step = True, on_epoch =True, prog_bar=True)

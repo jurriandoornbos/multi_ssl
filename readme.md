@@ -137,3 +137,47 @@ Interestingly: dataset size doesnt seem to matter -Batchnorm to groupnorm first 
 
 New Heads that better work on the input. It seems that the original head kinda suced ass?
 
+
+Writing tasks todo:
+intro - context modern deep learning, lack of multispectral
+
+related works - sota ssl, sota ssl remote sensing-sats, then what is left?
+
+methods - Training dataset, SSL FastSiam, training params, segheads, evaluation tasks
+results - results!
+
+discussion - complexity of model impacts, resource use of training, limitations in evaluation
+
+conclusion/next steps
+
+programming tasks todo: (for vineseg)
+
+1. train FastSIAM:
+    - resnet18 (done-ish) - new augs todo (v3)
+    - resnet50
+    - swin-tiny (in progress)
+2. make resnet18-seg, resnet50-seg and swin-tiny-seg heads 
+    - 2a: make swin-tiny-seg head
+    - 2b: make resnet50-seg (prolly resnset18 works)
+3. train 1-shot example:
+    - 3a make 1-shot dataset
+    - 3b train:
+        - resnet18-seg pretrained
+        - resnet18-seg untrained
+        - resnet50-seg pretrained
+        - resnet50-seg untrained
+        - swintiny-seg pretrained
+        - swintiny-seg untrained
+
+4. show validation loss per model
+    - pretraining acts as a great regularizer!
+
+5. Therefore: 
+    - accuracy results pretraining last-model VS low-validation-loss selected model on all datasets
+    
+    - visualize results pretraining 1-shot performance of last-model VS low-validation-loss selected model (2imgs per model, 6 models = 12 imgs)
+
+0-shot performance:
+
+
+- semi supervised tuning along........

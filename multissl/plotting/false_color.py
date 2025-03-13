@@ -61,9 +61,15 @@ def visualize_predictions(model, dataloader, device, num_samples=4, class_names=
     images, masks = batch
     images = images.to(device)
     
+    model_type_name = model.__class__.__name__
     # Make predictions
-    with torch.no_grad():
-        logits = model(images)
+    if model_type_name == "MeanTeacherSegmentation":
+        print("Mean Teacher identified")
+        with torch.no_grad():
+            logits = model.teacher(images)
+    else:
+        with torch.no_grad():
+            logits = model(images)
     
     # Get class predictions
     preds = torch.argmax(logits, dim=1)

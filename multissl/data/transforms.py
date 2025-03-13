@@ -19,6 +19,7 @@ from .seg_transforms import (
     SafeRandomResizedCrop,
     SafeUIntToFloat,
     SafeGaussianBlur,
+    SafeGaussianNoise,
     CustomChannelDropout,
     ToTensorSafe,
     RandomBrightness,
@@ -35,40 +36,40 @@ class Transpose:
             return img.permute(2, 0, 1)
         return img
 
-def get_transform(args = None, img_size = None):
+def get_transform(args = None, img_size = None, ks =3,std_noise = 0.01, brightness_factor = 0.1, max_shift = 0.2):
     """
     Builds a transform pipeline for FastSiam using safer transforms
     and adding channel dropout for more robust augmentation.
     """
     if args:
         img_size = args.input_size
-    if not args:
+    elif not args:
         img_size = img_size
     else:
         raise ValueError("Please provide either args or img_size")
     base = [
-        SafeRandomResizedCrop(size=img_size, scale=(0.5, 1)),
+        SafeRandomResizedCrop(size=img_size, scale=(0.3, 1)),
         SafeRandomHorizontalFlip(p=0.5),
         SafeRandomVerticalFlip(p=0.5),
     ]
     
     # Add Gaussian blur
-    base.append(SafeGaussianBlur(kernel_size=5))
+    base.append(SafeGaussianBlur(kernel_size=ks))
     
     # Add channel dropout for improved robustness
-    base.append(CustomChannelDropout(drop_prob=0.1, channels_to_drop=1))
+    base.append(CustomChannelDropout(drop_prob=0.2, channels_to_drop=1))
     
-    # Add Gaussian noise
-    #base.append(SafeGaussianNoise(std=0.05))  # Adjusted for 0-1 range
+
     
     # Convert to float in 0-1 range
     base.append(SafeUIntToFloat())
-    
+    # Add Gaussian noise
+    base.append(SafeGaussianNoise(std=std_noise))  # Adjusted for 0-1 range
     # Add brightness variation
-    base.append(RandomBrightness())
+    base.append(RandomBrightness(brightness_factor = brightness_factor))
     
     # Add spectral shift
-    base.append(RandomSpectralShift())
+    base.append(RandomSpectralShift(max_shift = max_shift))
     
     # Set correct CHW format for tensor
     base.append(Transpose())

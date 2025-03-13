@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from multissl.models.seghead import SegmentationModel, SegmentationHead
+from multissl.models.seghead import SegmentationModel, HighResolutionHead
 
 
 class DomainAdapter(nn.Module):
@@ -122,7 +122,7 @@ class DomainAdaptiveSegmentationModel(pl.LightningModule):
         self.adapter_module = AdapterModule(self.feature_dimensions)
         
         # Create segmentation head
-        self.segmentation_head = SegmentationHead(
+        self.segmentation_head = HighResolutionHead(
             layer1_channels=self.feature_dimensions['layer1'],
             layer2_channels=self.feature_dimensions['layer2'],
             layer3_channels=self.feature_dimensions['layer3'],

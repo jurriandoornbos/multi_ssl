@@ -79,10 +79,10 @@ class ImageSaverCallback(pl.Callback):
         """Save images from the batch at the end of each epoch."""
         """Save images every n training steps."""
         
-        if trainer.global_step % self.every_n_steps != 0:
-            return
-
-        # Assuming batch contains (views, targets, filenames)
-        plot_first_batch(batch,self.output_dir)
-        if trainer.logger:
-            trainer.logger.log_image(key = "Batch viz", images =[os.path.join(self.output_dir, "lightly_multiview_batch.png")] )
+       
+        # Run for batch 0 or every n steps
+        if batch_idx == 0 or trainer.global_step % self.every_n_steps == 0:
+            # Assuming batch contains (views, targets, filenames)
+            plot_first_batch(batch, self.output_dir)
+            if trainer.logger:
+                trainer.logger.log_image(key="Batch viz", images=[os.path.join(self.output_dir, "lightly_multiview_batch.png")])
