@@ -382,13 +382,13 @@ class JointTransform:
             self.brightness_factor = 0.1
             self.spectral_shift_p = 0.1
         else:  # strong
-            self.crop_scale = (0.5, 1.0)
+            self.crop_scale = (0.2, 1.0)
             self.flip_p = 0.5
             self.noise_p = 0.5
             self.noise_std = 0.1
             self.channel_dropout_p = 0.2
-            self.brightness_factor = 0.1
-            self.spectral_shift_p = 0.1
+            self.brightness_factor = 0.3
+            self.spectral_shift_p = 0.3
     
     def __call__(self, img, mask=None):
         # Convert to numpy for processing if they're tensors

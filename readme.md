@@ -63,14 +63,16 @@ nahhh
 End of day:
 
 Semi-Supervised with EMA student-teacher seems to fail:
-    Heavy augs too heavy?
+    Heavy augs too heavy? - Nope was an error with MASKEING
     Hyperparameters?
 
 
 Adapters version works well. Could do with balancing the adapter VS segmenter: overfit on one over the other at the moment.
 Also implement with semi-heavy augmentations?
+yeah, doesnt work amazingly sadly
 
 Something with an EMA adapter? student-teacher vibe
+Perhapssss - Works okay I think
 
 # Implement FastSIAM with channel dropout augs?
 - Retrain R18, and SWIN model
@@ -101,4 +103,37 @@ train on eqv: eval on e score: the same/similar to only e
               eval on all score: better to only e
 
 6. It is all about varying the examples PER class
+    That's why we do minimal label-semi supervised learning
+
+
+
+
+# Findings for vineseg task Part 2:
+
+Semi-supervised on the backbone is nice.
+Although it does not seem to train the correct things from the dataset yet.
+I think it could be overfitting on the lower layers of the bbone? This method could work better with a SWIN?
+
+
+Trading it for no-pretraining causes it to heavily overfit and maintain low confidence in its scores.
+
+
+Fully supervised training on A:
+
+test on valA, B and C results in poor performance
+
+Semi supervised training on A (with raw img from B and C) is my new goal:
+It sometimes works -> especially quite wel for B, but not valA and C interestingly
+
+Ofcourse we are getting good scores. with F1 of around 70: that is basically predicting all-black
+Adjusting for class weights doesnt seem to change much.
+
+Teacher-student Semi slightly better
+Adapter Semi not quite good enough
+
+Interestingly: dataset size doesnt seem to matter -Batchnorm to groupnorm first tho
+1 or 5 10 or all samples aint changing much in  results. Just much longer training.
+
+
+New Heads that better work on the input. It seems that the original head kinda suced ass?
 

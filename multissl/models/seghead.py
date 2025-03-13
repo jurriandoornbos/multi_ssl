@@ -18,6 +18,271 @@ import torch.nn.functional as F
 import torchvision
 import timm
 
+class ResNet18FeatureExtractor(nn.Module):
+    """Enhanced ResNet feature extractor with dimension tracking and adaptive pooling"""
+    def __init__(self, resnet):
+        super().__init__()
+        # Store the components we need
+        self.conv1 = resnet.conv1
+        self.bn1 = resnet.bn1
+        self.relu = resnet.relu
+        self.maxpool = resnet.maxpool
+        
+        # Store the blocks
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
+        
+        # Add adaptive pooling for consistent output dimensions
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.flatten = nn.Flatten(1)
+        
+        # Store feature dimensions for reference
+        self.feature_dims = {
+            'stem': self.conv1.out_channels,  # 64 for ResNet18
+            'layer1': self._get_layer_out_channels(self.layer1),  # 64 for ResNet18
+            'layer2': self._get_layer_out_channels(self.layer2),  # 128 for ResNet18
+            'layer3': self._get_layer_out_channels(self.layer3),  # 256 for ResNet18
+            'layer4': self._get_layer_out_channels(self.layer4),  # 512 for ResNet18
+        }
+    
+    def _get_layer_out_channels(self, layer):
+        """Get output channels for a layer by checking its last block"""
+        if hasattr(layer[-1], 'conv3'):  # For bottleneck blocks (ResNet50+)
+            return layer[-1].conv3.out_channels
+        else:  # For basic blocks (ResNet18/34)
+            return layer[-1].conv2.out_channels
+    
+    def forward(self, x):
+        features = {}
+        
+        # Stem features
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        features['stem'] = x
+        
+        x = self.maxpool(x)
+        
+        # Layer features
+        x = self.layer1(x)
+        features['layer1'] = x
+        
+        x = self.layer2(x)
+        features['layer2'] = x
+        
+        x = self.layer3(x)
+        features['layer3'] = x
+        
+        x = self.layer4(x)
+        features['layer4'] = x
+        
+        # Global features
+        features['pooled'] = self.avgpool(x)
+        features['flat'] = self.flatten(features['pooled'])
+        
+        return features
+    
+    def get_block_features(self, x):
+        """Extract features from individual blocks within layers"""
+        block_features = {}
+        
+        # Stem
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        block_features['stem'] = x
+        
+        x = self.maxpool(x)
+        
+        # Process blocks individually
+        for i, block in enumerate(self.layer1):
+            x = block(x)
+            block_features[f'layer1.{i}'] = x
+            
+        for i, block in enumerate(self.layer2):
+            x = block(x)
+            block_features[f'layer2.{i}'] = x
+            
+        for i, block in enumerate(self.layer3):
+            x = block(x)
+            block_features[f'layer3.{i}'] = x
+            
+        for i, block in enumerate(self.layer4):
+            x = block(x)
+            block_features[f'layer4.{i}'] = x
+        
+        return block_features
+
+class ResNet18UNet(nn.Module):
+    """
+    UNet architecture with ResNet encoder.
+    Combines high-level semantic features with low-level spatial features
+    through skip connections between encoder and decoder.
+    """
+    def __init__(self, feat_dims, num_classes=2, img_size=224):
+        super().__init__()
+        
+
+        self.img_size = img_size
+        # Global context module - uses pooled features to create context vectors
+        # This helps the model understand global image context
+        self.global_context = nn.Sequential(
+            nn.Linear(feat_dims['layer4'], 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Create decoder path with skip connections
+        
+        # Decoder Block 4 (starting from deepest layer)
+        # Takes layer4 features and global context, upsamples to layer3's dimensions
+        self.decoder4 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer4'], feat_dims['layer3'], kernel_size=2, stride=2),
+            nn.BatchNorm2d(feat_dims['layer3']),
+            nn.ReLU(inplace=True)
+        )
+        # Additional convolution to integrate global context with layer4 features
+        self.global_inject4 = nn.Conv2d(feat_dims['layer4'] + 256, feat_dims['layer4'], kernel_size=1)
+        self.up_conv4 = nn.Sequential(
+            nn.Conv2d(feat_dims['layer3'] * 2, feat_dims['layer3'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['layer3']),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feat_dims['layer3'], feat_dims['layer3'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['layer3']),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Decoder Block 3
+        self.decoder3 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer3'], feat_dims['layer2'], kernel_size=2, stride=2),
+            nn.BatchNorm2d(feat_dims['layer2']),
+            nn.ReLU(inplace=True)
+        )
+        self.up_conv3 = nn.Sequential(
+            nn.Conv2d(feat_dims['layer2'] * 2, feat_dims['layer2'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['layer2']),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feat_dims['layer2'], feat_dims['layer2'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['layer2']),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Decoder Block 2
+        self.decoder2 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer2'], feat_dims['layer1'], kernel_size=2, stride=2),
+            nn.BatchNorm2d(feat_dims['layer1']),
+            nn.ReLU(inplace=True)
+        )
+        self.up_conv2 = nn.Sequential(
+            nn.Conv2d(feat_dims['layer1'] * 2, feat_dims['layer1'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['layer1']),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feat_dims['layer1'], feat_dims['layer1'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['layer1']),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Decoder Block 1
+        self.decoder1 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer1'], feat_dims['stem'], kernel_size=2, stride=2),
+            nn.BatchNorm2d(feat_dims['stem']),
+            nn.ReLU(inplace=True)
+        )
+        self.up_conv1 = nn.Sequential(
+            nn.Conv2d(feat_dims['stem'] * 2, feat_dims['stem'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['stem']),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feat_dims['stem'], feat_dims['stem'], kernel_size=3, padding=1),
+            nn.BatchNorm2d(feat_dims['stem']),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final upsampling to original image size
+        self.final_up = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['stem'], 32, kernel_size=2, stride=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final convolution to produce class logits
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, num_classes, kernel_size=1)
+        )
+    
+    def forward(self, features):
+        
+        # Extract features from different layers
+        stem_features = features['stem']       # 1/2 spatial size
+        layer1_features = features['layer1']   # 1/4 spatial size
+        layer2_features = features['layer2']   # 1/8 spatial size
+        layer3_features = features['layer3']   # 1/16 spatial size
+        layer4_features = features['layer4']   # 1/32 spatial size
+        
+        # Get global context from pooled features
+        pooled_features = features['flat']     # Global features
+        global_context = self.global_context(pooled_features)
+        
+        # Reshape global context to be injected into spatial features
+        # Convert from [B, C] to [B, C, 1, 1] for broadcasting
+        global_context = global_context.unsqueeze(-1).unsqueeze(-1)
+        
+        # Broadcast and tile global context to match spatial dimensions of layer4
+        h, w = layer4_features.shape[2:]
+        global_context_expanded = global_context.expand(-1, -1, h, w)
+        
+        # Combine global context with deepest feature map (layer4)
+        layer4_with_context = torch.cat([layer4_features, global_context_expanded], dim=1)
+        layer4_with_context = self.global_inject4(layer4_with_context)
+        
+        # Decoder path with skip connections
+        
+        # Decoder Block 4: layer4 -> layer3 (1/32 -> 1/16)
+        d4 = self.decoder4(layer4_with_context)
+        # Ensure dimensions match exactly before concatenation
+        if d4.shape != layer3_features.shape:
+            d4 = F.interpolate(d4, size=layer3_features.shape[2:], mode='bilinear', align_corners=False)
+        d4 = torch.cat([d4, layer3_features], dim=1)
+        d4 = self.up_conv4(d4)
+        
+        # Decoder Block 3: d4 -> layer2 (1/16 -> 1/8)
+        d3 = self.decoder3(d4)
+        if d3.shape != layer2_features.shape:
+            d3 = F.interpolate(d3, size=layer2_features.shape[2:], mode='bilinear', align_corners=False)
+        d3 = torch.cat([d3, layer2_features], dim=1)
+        d3 = self.up_conv3(d3)
+        
+        # Decoder Block 2: d3 -> layer1 (1/8 -> 1/4)
+        d2 = self.decoder2(d3)
+        if d2.shape != layer1_features.shape:
+            d2 = F.interpolate(d2, size=layer1_features.shape[2:], mode='bilinear', align_corners=False)
+        d2 = torch.cat([d2, layer1_features], dim=1)
+        d2 = self.up_conv2(d2)
+        
+        # Decoder Block 1: d2 -> stem (1/4 -> 1/2)
+        d1 = self.decoder1(d2)
+        if d1.shape != stem_features.shape:
+            d1 = F.interpolate(d1, size=stem_features.shape[2:], mode='bilinear', align_corners=False)
+        d1 = torch.cat([d1, stem_features], dim=1)
+        d1 = self.up_conv1(d1)
+        
+        # Final upsampling to original image size (1/2 -> 1/1)
+        out = self.final_up(d1)
+        
+        # Handle any size discrepancies for the final output
+        if out.shape[2:] != (self.img_size, self.img_size):
+            out = F.interpolate(out, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
+        
+        # Final convolution to produce class logits
+        out = self.final_conv(out)
+        
+        return out
+
 class ResNetExtractor(nn.Module):
     def __init__(self, resnet):
         super().__init__()
@@ -167,6 +432,271 @@ class SegmentationHead(nn.Module):
         print(f"f3: {f3.shape}")
         print(f"f4: {f4.shape}")
 
+class PyramidPoolingModule(nn.Module):
+    def __init__(self, in_channels, out_channels, pool_scales=(1, 2, 3, 6)):
+        super().__init__()
+        self.stages = nn.ModuleList()
+        for scale in pool_scales:
+            # For the smallest scale (1x1), use GroupNorm instead of BatchNorm
+            # to avoid the "Expected more than 1 value per channel when training" error
+            if scale == 1:
+                self.stages.append(nn.Sequential(
+                    nn.AdaptiveAvgPool2d(scale),
+                    nn.Conv2d(in_channels, out_channels, kernel_size=1),
+                    nn.GroupNorm(num_groups=min(32, out_channels), num_channels=out_channels),
+                    nn.ReLU(inplace=True)
+                ))
+            else:
+                self.stages.append(nn.Sequential(
+                    nn.AdaptiveAvgPool2d(scale),
+                    nn.Conv2d(in_channels, out_channels, kernel_size=1),
+                    nn.BatchNorm2d(out_channels),
+                    nn.ReLU(inplace=True)
+                ))
+        
+        # Use GroupNorm in the bottleneck for safer training
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(in_channels + out_channels * len(pool_scales), out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=min(32, out_channels), num_channels=out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+    def forward(self, x):
+        width, height = x.shape[2], x.shape[3]
+        pyramid_features = [x]
+        
+        for stage in self.stages:
+            feat = stage[0](x)  # pool
+            feat = stage[1:](feat)  # conv, norm, relu
+            feat = F.interpolate(feat, size=(height, width), mode='bilinear', align_corners=True)
+            pyramid_features.append(feat)
+            
+        out = torch.cat(pyramid_features, dim=1)
+        out = self.bottleneck(out)
+        
+        return out
+    
+class UPerHead(nn.Module):
+    def __init__(self, layer1_channels, layer2_channels, layer3_channels, layer4_channels, 
+                 num_classes=2, img_size=224, fpn_out_channels=256, ppm_out_channels=512):
+        super().__init__()
+        layer_channels = {"layer1": layer1_channels,
+                          "layer2": layer2_channels,
+                          "layer3": layer3_channels,
+                          "layer4": layer4_channels}
+        # Store image size for final upsampling
+        self.img_size = img_size
+        
+        # PPM module on the highest-level features
+        self.ppm = PyramidPoolingModule(layer_channels['layer4'], ppm_out_channels)
+        
+        # FPN lateral connections
+        self.lateral_convs = nn.ModuleDict({
+            f'layer{i}': nn.Conv2d(layer_channels[f'layer{i}'], fpn_out_channels, kernel_size=1)
+            for i in range(1, 4)
+        })
+        
+        # FPN output convs
+        self.fpn_convs = nn.ModuleDict({
+            f'layer{i}': nn.Sequential(
+                nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(num_groups=min(32, fpn_out_channels), num_channels=fpn_out_channels),
+                nn.ReLU(inplace=True)
+            ) for i in range(1, 4)
+        })
+        
+        # Connect PPM output to FPN
+        self.ppm_conv = nn.Conv2d(ppm_out_channels, fpn_out_channels, kernel_size=1)
+        
+        # Final fusion of all levels
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(fpn_out_channels * 4, fpn_out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=min(32, fpn_out_channels), num_channels=fpn_out_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Classifier
+        self.classifier = nn.Conv2d(fpn_out_channels, num_classes, kernel_size=1)
+        
+    def forward(self, features):
+        # Apply PPM to highest level feature
+        ppm_out = self.ppm(features['layer4'])
+        f = self.ppm_conv(ppm_out)
+        
+        # Apply FPN top-down pathway
+        fpn_features = [f]
+        for i in range(3, 0, -1):
+            layer_name = f'layer{i}'
+            feat = features[layer_name]
+            lat = self.lateral_convs[layer_name](feat)
+            
+            # Add upsampled higher-level feature
+            f = F.interpolate(f, size=feat.shape[2:], mode='bilinear', align_corners=True)
+            f = lat + f
+            
+            # Apply output conv
+            fpn_out = self.fpn_convs[layer_name](f)
+            fpn_features.insert(0, fpn_out)  # Insert at beginning to maintain order
+        
+        # Upsample all FPN outputs to the same size (of the largest feature map)
+        output_size = fpn_features[0].shape[2:]
+        for i in range(1, len(fpn_features)):
+            fpn_features[i] = F.interpolate(fpn_features[i], size=output_size, mode='bilinear', align_corners=True)
+        
+        # Fuse all levels
+        fused = torch.cat(fpn_features, dim=1)
+        fused = self.fusion_conv(fused)
+        
+        # Final classifier
+        output = F.interpolate(fused, size=(self.img_size, self.img_size), mode='bilinear', align_corners=True)
+        output = self.classifier(output)
+        
+        return output
+
+
+class HighResolutionHead(nn.Module):
+    """
+    High-resolution segmentation head inspired by HRNetV2.
+    Maintains high resolution throughout and uses multi-scale fusion for precise boundaries.
+    """
+    def __init__(self, layer1_channels, layer2_channels,layer3_channels,layer4_channels,num_classes, img_size, high_res_channels=128):
+        super().__init__()
+        layer_channels = {"layer1": layer1_channels,
+                    "layer2": layer2_channels,
+                    "layer3": layer3_channels,
+                    "layer4": layer4_channels}
+        self.img_size = img_size
+        
+        # 1. Initial reduction of feature dimensions from backbone
+        self.reduce_layer1 = nn.Sequential(
+            nn.Conv2d(layer_channels['layer1'], high_res_channels, kernel_size=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.reduce_layer2 = nn.Sequential(
+            nn.Conv2d(layer_channels['layer2'], high_res_channels, kernel_size=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.reduce_layer3 = nn.Sequential(
+            nn.Conv2d(layer_channels['layer3'], high_res_channels, kernel_size=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.reduce_layer4 = nn.Sequential(
+            nn.Conv2d(layer_channels['layer4'], high_res_channels, kernel_size=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # 2. High-resolution convolutions for each scale level
+        self.high_res_convs = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(high_res_channels, high_res_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, high_res_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(high_res_channels, high_res_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, high_res_channels),
+                nn.ReLU(inplace=True)
+            ) for _ in range(4)  # One for each resolution
+        ])
+        
+        # 3. Multi-scale fusion module
+        self.multi_scale_fusion = nn.Sequential(
+            nn.Conv2d(high_res_channels * 4, high_res_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(high_res_channels, high_res_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # 4. Final boundary refinement module
+        self.boundary_refinement = nn.Sequential(
+            nn.Conv2d(high_res_channels + layer_channels['layer1'], high_res_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(high_res_channels, high_res_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # 5. Auxiliary deep supervision heads for better gradient flow
+        self.aux_head = nn.Conv2d(high_res_channels, num_classes, kernel_size=1)
+        
+        # 6. Final classifier
+        self.classifier = nn.Sequential(
+            nn.Conv2d(high_res_channels, high_res_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(32, high_res_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(high_res_channels, num_classes, kernel_size=1)
+        )
+        
+        # Optional: Edge attention module
+        self.edge_attention = nn.Sequential(
+            nn.Conv2d(high_res_channels, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, features):
+        # Extract features from backbone
+        feat1 = features['layer1']  # 1/4 resolution
+        feat2 = features['layer2']  # 1/8 resolution
+        feat3 = features['layer3']  # 1/16 resolution
+        feat4 = features['layer4']  # 1/32 resolution
+        
+        # Record sizes for precise upsampling
+        size1 = feat1.shape[2:]  # Highest resolution feature map size
+        
+        # Reduce channel dimensions
+        feat1 = self.reduce_layer1(feat1)
+        feat2 = self.reduce_layer2(feat2)
+        feat3 = self.reduce_layer3(feat3)
+        feat4 = self.reduce_layer4(feat4)
+        
+        # Upsample all features to the highest resolution (layer1)
+        feat2_up = F.interpolate(feat2, size=size1, mode='bilinear', align_corners=True)
+        feat3_up = F.interpolate(feat3, size=size1, mode='bilinear', align_corners=True)
+        feat4_up = F.interpolate(feat4, size=size1, mode='bilinear', align_corners=True)
+        
+        # Apply high-resolution convs to each feature
+        feat1 = self.high_res_convs[0](feat1)
+        feat2_up = self.high_res_convs[1](feat2_up)
+        feat3_up = self.high_res_convs[2](feat3_up)
+        feat4_up = self.high_res_convs[3](feat4_up)
+        
+        # Concatenate multi-scale features
+        multi_scale_features = torch.cat([feat1, feat2_up, feat3_up, feat4_up], dim=1)
+        
+        # Apply multi-scale fusion
+        fused_features = self.multi_scale_fusion(multi_scale_features)
+        
+        # Optional: Edge attention
+        edge_map = self.edge_attention(fused_features)
+        
+        # Concatenate original high-res features (layer1) for boundary refinement
+        concat_features = torch.cat([fused_features, features['layer1']], dim=1)
+        refined_features = self.boundary_refinement(concat_features)
+        
+        # Apply edge-aware refinement
+        refined_features = refined_features * (1 + edge_map)
+        
+        # Auxiliary output for deep supervision (optional in training)
+        aux_output = self.aux_head(fused_features)
+        aux_output = F.interpolate(aux_output, size=(self.img_size, self.img_size), 
+                                 mode='bilinear', align_corners=True)
+        
+        # Final classification
+        output = self.classifier(refined_features)
+        
+        # Upsample to original image size
+        output = F.interpolate(output, size=(self.img_size, self.img_size), 
+                              mode='bilinear', align_corners=True)
+        
+        # During training you can return both outputs for deep supervision
+        # return output, aux_output
+        return output
+    
 class ViTExtractor(nn.Module):
     """Extracts multi-scale features from a ViT model"""
     def __init__(self, vit, img_size=224, patch_size=16):
@@ -276,7 +806,7 @@ class SegmentationModel(pl.LightningModule):
             if backbone_type == "resnet18":
                 resnet = torchvision.models.resnet18(weights=None)
                 self._modify_resnet_for_4_channels(resnet, in_channels)
-                self.feature_extractor = ResNetExtractor(resnet)
+                self.feature_extractor = ResNet18FeatureExtractor(resnet)
             elif backbone_type == "resnet50":
                 resnet = torchvision.models.resnet50(weights=None)
                 self._modify_resnet_for_4_channels(resnet, in_channels)
@@ -335,15 +865,21 @@ class SegmentationModel(pl.LightningModule):
             print(f"Detected feature dimensions: layer1={layer1_channels}, layer2={layer2_channels}, "
                   f"layer3={layer3_channels}, layer4={layer4_channels}")
         
-        # Initialize segmentation head with correct dimensions
-        self.seg_head = SegmentationHead(
-            layer1_channels=layer1_channels,
-            layer2_channels=layer2_channels,
-            layer3_channels=layer3_channels,
-            layer4_channels=layer4_channels,
-            num_classes=num_classes,
-            img_size=img_size
-        )
+        if backbone_type == "resnet18":
+            self.seg_head = ResNet18UNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
+
+        else:
+            # Initialize segmentation head with correct dimensions
+            self.seg_head = HighResolutionHead(
+                layer1_channels=layer1_channels,
+                layer2_channels=layer2_channels,
+                layer3_channels=layer3_channels,
+                layer4_channels=layer4_channels,
+                num_classes=num_classes,
+                img_size=img_size
+            )
+        
+        
         
         # Training parameters
         self.lr = lr
@@ -699,4 +1235,4 @@ class SegmentationModel(pl.LightningModule):
         torch.set_grad_enabled(True)
         
         return results
-    
+ 

@@ -37,7 +37,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
         img_size=224,
         lr=1e-4,
         weight_decay=1e-5,
-        ema_decay=0.999,          # Decay rate for teacher EMA update
+        ema_decay=0.99,          # Decay rate for teacher EMA update
         consistency_weight=1.0,   # Weight for consistency loss
         consistency_rampup=40,    # Epochs to ramp up consistency weight
         confidence_threshold=0.8, # Confidence threshold for pseudo-labels
@@ -221,11 +221,14 @@ class MeanTeacherSegmentation(pl.LightningModule):
             # Calculate supervised loss (CE + Dice)
             supervised_loss = self.student.combined_loss(
                 student_logits_l, labeled_masks
+                
             )
+
             
             # Add supervised loss to total
             total_loss += supervised_loss
-            
+
+
             # Log supervised loss
             self.log("train_supervised_loss", supervised_loss, prog_bar=True)
             
@@ -298,6 +301,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
         
         return total_loss
     
+    
     def validation_step(self, batch, batch_idx):
         """
         Validation step using the teacher model
@@ -312,7 +316,7 @@ class MeanTeacherSegmentation(pl.LightningModule):
             teacher_logits = self.teacher(images)
         
         # Calculate validation loss
-        val_loss = F.cross_entropy(teacher_logits, masks, weight = self.class_weights)
+        val_loss = F.cross_entropy(teacher_logits, masks, weight = self.class_weights.to(teacher_logits.device))
         
         # Calculate metrics
         preds = torch.argmax(teacher_logits, dim=1)
