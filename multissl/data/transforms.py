@@ -57,7 +57,7 @@ def get_transform(args = None, img_size = None, ks =3,std_noise = 0.01, brightne
     base.append(SafeGaussianBlur(kernel_size=ks))
     
     # Add channel dropout for improved robustness
-    base.append(CustomChannelDropout(drop_prob=0.2, channels_to_drop=1))
+    #base.append(CustomChannelDropout(drop_prob=0.2, channels_to_drop=1))
     
 
     

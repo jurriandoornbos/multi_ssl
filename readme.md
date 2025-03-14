@@ -46,96 +46,10 @@ python multissl/train.py --input_dir ../msdata/data/chipped_336 --num_workers 0
 
 python multissl/train.py --input_dir ../msdata/data/chipped_512 --num_workers 0 --backbone swin-tiny --epochs 2
 
-# Run a comparison of various SSL methods?
-nahhh
-1. FastSiam
-
-# Variation in backbone:
+## Variation in backbone:
 1. Resnet18 (11M) 
 2. Resnet50 (22M)
-3. Swin TF (33M)
-
-
-# Findings for vineseg task:
-
-
-
-End of day:
-
-Semi-Supervised with EMA student-teacher seems to fail:
-    Heavy augs too heavy? - Nope was an error with MASKEING
-    Hyperparameters?
-
-
-Adapters version works well. Could do with balancing the adapter VS segmenter: overfit on one over the other at the moment.
-Also implement with semi-heavy augmentations?
-yeah, doesnt work amazingly sadly
-
-Something with an EMA adapter? student-teacher vibe
-Perhapssss - Works okay I think
-
-# Implement FastSIAM with channel dropout augs?
-- Retrain R18, and SWIN model
-
-R50+4.5M head findings?
-
-1. More complex backbone does not yield better performance
-
-R18+3.5M head findings:
-
-2. Pretraining does not increase any-shot test accuracy compared to End-to-End training
-
-3. Pretraining increases stability in training, the frozen backend has already found a non-overfitting optimum
-
-4. Pretraining does not increase generalization of accuracy
-
-5. Dataset variation is the most important to increase
-    HOW to showcase this best?
-Make datasets with 5 samples in the training set: none in the eval set
-    train5_q
-    train5_e
-    train5_v
-
-train on e: eval on e score: 
-            eval on all score:
-
-train on eqv: eval on e score: the same/similar to only e
-              eval on all score: better to only e
-
-6. It is all about varying the examples PER class
-    That's why we do minimal label-semi supervised learning
-
-
-
-
-# Findings for vineseg task Part 2:
-
-Semi-supervised on the backbone is nice.
-Although it does not seem to train the correct things from the dataset yet.
-I think it could be overfitting on the lower layers of the bbone? This method could work better with a SWIN?
-
-
-Trading it for no-pretraining causes it to heavily overfit and maintain low confidence in its scores.
-
-
-Fully supervised training on A:
-
-test on valA, B and C results in poor performance
-
-Semi supervised training on A (with raw img from B and C) is my new goal:
-It sometimes works -> especially quite wel for B, but not valA and C interestingly
-
-Ofcourse we are getting good scores. with F1 of around 70: that is basically predicting all-black
-Adjusting for class weights doesnt seem to change much.
-
-Teacher-student Semi slightly better
-Adapter Semi not quite good enough
-
-Interestingly: dataset size doesnt seem to matter -Batchnorm to groupnorm first tho
-1 or 5 10 or all samples aint changing much in  results. Just much longer training.
-
-
-New Heads that better work on the input. It seems that the original head kinda suced ass?
+3. Swin TF (27.5M)
 
 
 Writing tasks todo:
@@ -176,6 +90,8 @@ programming tasks todo: (for vineseg)
     - accuracy results pretraining last-model VS low-validation-loss selected model on all datasets
     
     - visualize results pretraining 1-shot performance of last-model VS low-validation-loss selected model (2imgs per model, 6 models = 12 imgs)
+
+How about a randomforest classifier? with 1 label
 
 0-shot performance:
 

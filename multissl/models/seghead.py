@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import torchvision
 import timm
 
-class ResNet18FeatureExtractor(nn.Module):
+class ResNetBackbone(nn.Module):
     """Enhanced ResNet feature extractor with dimension tracking and adaptive pooling"""
     def __init__(self, resnet):
         super().__init__()
@@ -115,7 +115,7 @@ class ResNet18FeatureExtractor(nn.Module):
         
         return block_features
 
-class ResNet18UNet(nn.Module):
+class ResNetBackboneUNet(nn.Module):
     """
     UNet architecture with ResNet encoder.
     Combines high-level semantic features with low-level spatial features
@@ -473,42 +473,376 @@ class ViTExtractor(nn.Module):
         
         return features
 
-class SwinExtractor(nn.Module):
-    """Extracts multi-scale features from a Swin Transformer model"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class SwinBackbone(nn.Module):
+    """
+    Enhanced Swin Transformer feature extractor with proper feature mapping
+    and dimension tracking for compatibility with UNet-style decoders.
+    """
     def __init__(self, swin):
         super().__init__()
         self.swin = swin
         
+        # Store patch size and feature dimensions
+        self.patch_size = swin.patch_embed.patch_size[0] if hasattr(swin.patch_embed, 'patch_size') else 4
+        
+        # Detect feature dimensions from swin layers
+        # Note: These need to be calculated based on the specific Swin variant
+        self.feature_dims = self._detect_feature_dimensions()
+        
+        # Add global pooling
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.flatten = nn.Flatten(1)
+        
+    def _detect_feature_dimensions(self):
+        """Determine output dimensions of each Swin stage"""
+        feature_dims = {}
+        
+        # Get the embedding dimension from patch embed
+        if hasattr(self.swin, 'patch_embed'):
+            # For timm Swin models
+            stem_dim = self.swin.patch_embed.proj.out_channels
+            feature_dims['stem'] = stem_dim
+        
+        # Extract dimensions from each layer
+        # For timm Swin models, dimensions are typically:
+        # - layer0 (stem): C
+        # - layer1: C
+        # - layer2: 2C
+        # - layer3: 4C
+        # - layer4: 8C
+        # where C is the base embedding dimension
+        
+        if hasattr(self.swin, 'layers') and len(self.swin.layers) >= 4:
+            # For most Swin implementations with 4 stages
+            feature_dims['layer1'] = self.swin.layers[0].blocks[0].mlp.fc2.out_features
+            feature_dims['layer2'] = self.swin.layers[1].blocks[0].mlp.fc2.out_features
+            feature_dims['layer3'] = self.swin.layers[2].blocks[0].mlp.fc2.out_features
+            feature_dims['layer4'] = self.swin.layers[3].blocks[0].mlp.fc2.out_features
+        
+        return feature_dims
+        
     def forward(self, x):
+        """
+        Forward pass through Swin Transformer, extracting features at each stage.
+        
+        Args:
+            x: Input tensor of shape [B, C, H, W]
+            
+        Returns:
+            Dictionary of features from different stages of the network
+        """
         features = {}
         
-        # For Swin, we need to adapt based on its implementation
-        # This is a simplification and needs to be adjusted based on the exact Swin implementation
+        # Initial processing
         x = self.swin.patch_embed(x)
+        original_shape = x.shape  # Save shape for reference
         
+        # Add positional embedding if present
         if hasattr(self.swin, 'absolute_pos_embed') and self.swin.absolute_pos_embed is not None:
             x = x + self.swin.absolute_pos_embed
         
+        # Apply dropout
         x = self.swin.pos_drop(x)
         
-        # Process through Swin stages and collect outputs
+        # Store stem features (after patch embedding)
+        # Need to reshape from [B, L, C] to [B, C, H, W]
+        H, W = original_shape[2], original_shape[3]
+        stem_features = x.permute(0, 2, 1).reshape(-1, self.feature_dims['stem'], H, W)
+        features['stem'] = stem_features
+        
+        # Process through Swin stages
         # Stage 1
         x = self.swin.layers[0](x)
-        features['layer1'] = x.permute(0, 3, 1, 2)  # Convert to [B, C, H, W]
+        H1, W1 = H, W  # Same resolution as stem for first stage
+        features['layer1'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer1'], H1, W1)
         
-        # Stage 2
+        # Stage 2 (2x downsampling)
         x = self.swin.layers[1](x)
-        features['layer2'] = x.permute(0, 3, 1, 2)
+        H2, W2 = H1 // 2, W1 // 2  # Downsampled by 2x
+        features['layer2'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer2'], H2, W2)
         
-        # Stage 3
+        # Stage 3 (4x downsampling from original)
         x = self.swin.layers[2](x)
-        features['layer3'] = x.permute(0, 3, 1, 2)
+        H3, W3 = H2 // 2, W2 // 2  # Downsampled by 2x again
+        features['layer3'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer3'], H3, W3)
         
-        # Stage 4
+        # Stage 4 (8x downsampling from original)
         x = self.swin.layers[3](x)
-        features['layer4'] = x.permute(0, 3, 1, 2)
+        H4, W4 = H3 // 2, W3 // 2  # Downsampled by 2x again
+        features['layer4'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer4'], H4, W4)
+        
+        # Create global features
+        features['pooled'] = self.avgpool(features['layer4'])
+        features['flat'] = self.flatten(features['pooled'])
         
         return features
+
+
+class SwinBackboneUNet(nn.Module):
+    """
+    UNet architecture adapted specifically for Swin Transformer encoder.
+    Incorporates attention mechanisms in the decoder to better leverage
+    transformer features.
+    """
+    def __init__(self, feat_dims, num_classes=2, img_size=224, use_attention=False):
+        super().__init__()
+        self.img_size = img_size
+        self.use_attention = use_attention
+        
+        # Global context module with attention
+        self.global_context = nn.Sequential(
+            nn.Linear(feat_dims['layer4'], 512),
+            nn.LayerNorm(512),  # LayerNorm works better for transformer features
+            nn.GELU(),  # GELU activation as used in transformers
+            nn.Linear(512, 256),
+            nn.LayerNorm(256),
+            nn.GELU()
+        )
+        
+        # Attention modules for skip connections (if enabled)
+        if use_attention:
+            self.attn4 = CrossAttentionBlock(feat_dims['layer3'], feat_dims['layer4'])
+            self.attn3 = CrossAttentionBlock(feat_dims['layer2'], feat_dims['layer3'])
+            self.attn2 = CrossAttentionBlock(feat_dims['layer1'], feat_dims['layer2'])
+            self.attn1 = CrossAttentionBlock(feat_dims['stem'], feat_dims['layer1'])
+        
+        # Decoder block 4: layer4 -> layer3 size
+        self.decoder4 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer4'], feat_dims['layer3'], kernel_size=2, stride=2),
+            nn.GroupNorm(32, feat_dims['layer3']),  # GroupNorm is more stable than BatchNorm
+            nn.GELU()
+        )
+        self.global_inject4 = nn.Conv2d(feat_dims['layer4'] + 256, feat_dims['layer4'], kernel_size=1)
+        self.up_conv4 = nn.Sequential(
+            nn.Conv2d(feat_dims['layer3'] * 2, feat_dims['layer3'], kernel_size=3, padding=1),
+            nn.GroupNorm(32, feat_dims['layer3']),
+            nn.GELU(),
+            nn.Conv2d(feat_dims['layer3'], feat_dims['layer3'], kernel_size=3, padding=1),
+            nn.GroupNorm(32, feat_dims['layer3']),
+            nn.GELU()
+        )
+        
+        # Decoder block 3: layer3 -> layer2 size
+        self.decoder3 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer3'], feat_dims['layer2'], kernel_size=2, stride=2),
+            nn.GroupNorm(32, feat_dims['layer2']),
+            nn.GELU()
+        )
+        self.up_conv3 = nn.Sequential(
+            nn.Conv2d(feat_dims['layer2'] * 2, feat_dims['layer2'], kernel_size=3, padding=1),
+            nn.GroupNorm(32, feat_dims['layer2']),
+            nn.GELU(),
+            nn.Conv2d(feat_dims['layer2'], feat_dims['layer2'], kernel_size=3, padding=1),
+            nn.GroupNorm(32, feat_dims['layer2']),
+            nn.GELU()
+        )
+        
+        # Decoder block 2: layer2 -> layer1 size
+        self.decoder2 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer2'], feat_dims['layer1'], kernel_size=2, stride=2),
+            nn.GroupNorm(16, feat_dims['layer1']),
+            nn.GELU()
+        )
+        self.up_conv2 = nn.Sequential(
+            nn.Conv2d(feat_dims['layer1'] * 2, feat_dims['layer1'], kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dims['layer1']),
+            nn.GELU(),
+            nn.Conv2d(feat_dims['layer1'], feat_dims['layer1'], kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dims['layer1']),
+            nn.GELU()
+        )
+        
+        # Decoder block 1: layer1 -> stem size
+        self.decoder1 = nn.Sequential(
+            nn.ConvTranspose2d(feat_dims['layer1'], feat_dims['stem'], kernel_size=2, stride=2),
+            nn.GroupNorm(16, feat_dims['stem']),
+            nn.GELU()
+        )
+        self.up_conv1 = nn.Sequential(
+            nn.Conv2d(feat_dims['stem'] * 2, feat_dims['stem'], kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dims['stem']),
+            nn.GELU(),
+            nn.Conv2d(feat_dims['stem'], feat_dims['stem'], kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dims['stem']),
+            nn.GELU()
+        )
+        
+        # Final upsampling to original size
+        # Using pixel shuffle for better upsampling quality
+        self.final_up = nn.Sequential(
+            nn.Conv2d(feat_dims['stem'], 128, kernel_size=3, padding=1),
+            nn.GroupNorm(16, 128),
+            nn.GELU(),
+            nn.PixelShuffle(2),  # Upscale by 2x using pixel shuffle (128 -> 32 channels)
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.GELU()
+        )
+        
+        # Final classification layers
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.GELU(),
+            nn.Conv2d(32, num_classes, kernel_size=1)
+        )
+    
+    def forward(self, features):
+        # Extract features from feature dictionary
+        stem_features = features['stem']       # Highest resolution
+        layer1_features = features['layer1']   
+        layer2_features = features['layer2']   
+        layer3_features = features['layer3']   
+        layer4_features = features['layer4']   # Lowest resolution
+        pooled_features = features['flat']     # Global features
+        
+        # Process global context
+        global_context = self.global_context(pooled_features)
+        global_context = global_context.unsqueeze(-1).unsqueeze(-1)
+        
+        # Expand global context to match layer4 spatial dimensions
+        h4, w4 = layer4_features.shape[2:]
+        global_context_expanded = global_context.expand(-1, -1, h4, w4)
+        
+        # Combine global context with layer4 features
+        layer4_with_context = torch.cat([layer4_features, global_context_expanded], dim=1)
+        layer4_with_context = self.global_inject4(layer4_with_context)
+        
+        # Apply attention to skip connections if enabled
+        if self.use_attention:
+            # Enhanced skip connections with attention
+            layer3_enhanced = self.attn4(layer3_features, layer4_features)
+            layer2_enhanced = self.attn3(layer2_features, layer3_features)
+            layer1_enhanced = self.attn2(layer1_features, layer2_features)
+            stem_enhanced = self.attn1(stem_features, layer1_features)
+        else:
+            # Standard skip connections
+            layer3_enhanced = layer3_features
+            layer2_enhanced = layer2_features
+            layer1_enhanced = layer1_features
+            stem_enhanced = stem_features
+        
+        # Decoder path with enhanced skip connections
+        # Decoder Block 4: layer4 -> layer3 size
+        d4 = self.decoder4(layer4_with_context)
+        if d4.shape[2:] != layer3_enhanced.shape[2:]:
+            d4 = F.interpolate(d4, size=layer3_enhanced.shape[2:], mode='bilinear', align_corners=False)
+        d4 = torch.cat([d4, layer3_enhanced], dim=1)
+        d4 = self.up_conv4(d4)
+        
+        # Decoder Block 3: d4 -> layer2 size
+        d3 = self.decoder3(d4)
+        if d3.shape[2:] != layer2_enhanced.shape[2:]:
+            d3 = F.interpolate(d3, size=layer2_enhanced.shape[2:], mode='bilinear', align_corners=False)
+        d3 = torch.cat([d3, layer2_enhanced], dim=1)
+        d3 = self.up_conv3(d3)
+        
+        # Decoder Block 2: d3 -> layer1 size
+        d2 = self.decoder2(d3)
+        if d2.shape[2:] != layer1_enhanced.shape[2:]:
+            d2 = F.interpolate(d2, size=layer1_enhanced.shape[2:], mode='bilinear', align_corners=False)
+        d2 = torch.cat([d2, layer1_enhanced], dim=1)
+        d2 = self.up_conv2(d2)
+        
+        # Decoder Block 1: d2 -> stem size
+        d1 = self.decoder1(d2)
+        if d1.shape[2:] != stem_enhanced.shape[2:]:
+            d1 = F.interpolate(d1, size=stem_enhanced.shape[2:], mode='bilinear', align_corners=False)
+        d1 = torch.cat([d1, stem_enhanced], dim=1)
+        d1 = self.up_conv1(d1)
+        
+        # Final upsampling to original image size
+        out = self.final_up(d1)
+        
+        # Ensure correct output size
+        if out.shape[2:] != (self.img_size, self.img_size):
+            out = F.interpolate(out, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
+        
+        # Final convolution to produce class logits
+        out = self.final_conv(out)
+        
+        return out
+
+
+class CrossAttentionBlock(nn.Module):
+    """
+    Cross-attention block for enhancing skip connections.
+    Uses higher-level features to attend to lower-level features.
+    """
+    def __init__(self, low_channels, high_channels, mid_channels=None):
+        super().__init__()
+        if mid_channels is None:
+            mid_channels = low_channels // 2
+        
+        # Query from low-level features, Key and Value from high-level features
+        self.query_conv = nn.Conv2d(low_channels, mid_channels, kernel_size=1)
+        self.key_conv = nn.Conv2d(high_channels, mid_channels, kernel_size=1)
+        self.value_conv = nn.Conv2d(high_channels, mid_channels, kernel_size=1)
+        
+        # Output projection and residual connection
+        self.output_conv = nn.Conv2d(mid_channels, low_channels, kernel_size=1)
+        
+        # Scaling factor for dot-product attention
+        self.scale = mid_channels ** -0.5
+        
+        # Normalization layers
+        self.norm_low = nn.GroupNorm(8, low_channels)
+        self.norm_out = nn.GroupNorm(8, low_channels)
+        
+    def forward(self, low_features, high_features):
+        """
+        Args:
+            low_features: Lower-level features to be enhanced
+            high_features: Higher-level features that provide context
+            
+        Returns:
+            Enhanced low-level features
+        """
+        batch_size, _, h, w = low_features.shape
+        
+        # Apply normalization to inputs
+        low_features_norm = self.norm_low(low_features)
+        
+        # If high features have different resolution, upsample them
+        if high_features.shape[2:] != low_features.shape[2:]:
+            high_features = F.interpolate(
+                high_features, 
+                size=low_features.shape[2:], 
+                mode='bilinear', 
+                align_corners=False
+            )
+        
+        # Generate Q, K, V
+        q = self.query_conv(low_features_norm)
+        k = self.key_conv(high_features)
+        v = self.value_conv(high_features)
+        
+        # Reshape for attention computation
+        q = q.view(batch_size, -1, h*w).permute(0, 2, 1)  # B, HW, C
+        k = k.view(batch_size, -1, h*w)  # B, C, HW
+        v = v.view(batch_size, -1, h*w).permute(0, 2, 1)  # B, HW, C
+        
+        # Compute attention scores
+        attn = torch.bmm(q, k) * self.scale  # B, HW, HW
+        attn = F.softmax(attn, dim=-1)
+        
+        # Apply attention weights to values
+        out = torch.bmm(attn, v)  # B, HW, C
+        out = out.permute(0, 2, 1).view(batch_size, -1, h, w)  # B, C, H, W
+        
+        # Project back to original dimension
+        out = self.output_conv(out)
+        
+        # Residual connection and final normalization
+        out = out + low_features
+        out = self.norm_out(out)
+        
+        return out
 
 class SegmentationModel(pl.LightningModule):
     """
@@ -535,11 +869,11 @@ class SegmentationModel(pl.LightningModule):
             if backbone_type == "resnet18":
                 resnet = torchvision.models.resnet18(weights=None)
                 self._modify_resnet_for_4_channels(resnet, in_channels)
-                self.feature_extractor = ResNet18FeatureExtractor(resnet)
+                self.feature_extractor = ResNetBackbone(resnet)
             elif backbone_type == "resnet50":
                 resnet = torchvision.models.resnet50(weights=None)
                 self._modify_resnet_for_4_channels(resnet, in_channels)
-                self.feature_extractor = ResNetExtractor(resnet)
+                self.feature_extractor = ResNetBackbone(resnet)
             else:
                 raise ValueError(f"Unsupported ResNet type: {backbone_type}")
                 
@@ -565,7 +899,7 @@ class SegmentationModel(pl.LightningModule):
                     in_chans=in_channels,
                     num_classes=0
                 )
-                self.feature_extractor = SwinExtractor(swin)
+                self.feature_extractor = SwinBackbone(swin)
             else:
                 raise ValueError(f"Unsupported Swin type: {backbone_type}")
         else:
@@ -595,11 +929,13 @@ class SegmentationModel(pl.LightningModule):
                   f"layer3={layer3_channels}, layer4={layer4_channels}")
         
         if backbone_type == "resnet18":
-            self.seg_head = ResNet18UNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
-        if backbone_type == "resnet50":
-            self.seg_head = ResNet18UNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
-
-
+            self.seg_head = ResNetBackboneUNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
+        elif backbone_type == "resnet50":
+            self.seg_head = ResNetBackboneUNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
+        elif backbone_type == "swin-tiny":
+            self.seg_head = SwinBackboneUNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
+        elif backbone_type == "vit-s":
+            self.seg_head = ResNetBackboneUNet(self.feature_extractor.feature_dims, num_classes=2, img_size=224)
         else:
             # Initialize segmentation head with correct dimensions
             self.seg_head = HighResolutionHead(
@@ -718,7 +1054,7 @@ class SegmentationModel(pl.LightningModule):
         dice = self.dice_loss(outputs, targets, weight = cw)
         
         # Combine losses
-        return ce_loss #ce_weight * ce_loss + dice_weight * dice
+        return ce_weight * ce_loss + dice_weight * dice
     
     def focal_loss(self, outputs, targets, alpha=0.25, gamma=2.0, reduction='mean'):
         """

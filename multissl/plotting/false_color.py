@@ -67,12 +67,18 @@ def visualize_predictions(model, dataloader, device, num_samples=4, class_names=
         print("Mean Teacher identified")
         with torch.no_grad():
             logits = model.teacher(images)
+                # Get class predictions
+            preds = torch.argmax(logits, dim=1)
+    elif model_type_name == "RandomForestSegmentation":
+        print("RandomForest identified")
+        preds = model.predict(images)
     else:
         with torch.no_grad():
             logits = model(images)
+                # Get class predictions
+            preds = torch.argmax(logits, dim=1)
     
-    # Get class predictions
-    preds = torch.argmax(logits, dim=1)
+
     
     if num_classes is None:
         num_classes = masks.max().item() + 1

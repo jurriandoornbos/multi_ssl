@@ -63,8 +63,8 @@ def main():
 
     # Create a multiview transform that returns two different augmentations of each image.
     transform_multispectral = get_transform(args, std_noise  =0.1, 
-                                            brightness_factor=0.25 ,
-                                            max_shift=0.25)
+                                            brightness_factor=0.1 ,
+                                            max_shift=0.1)
     tfs = [transform_multispectral for i in range(args.num_views)]
 
     transform_ms = MultiViewTransform(transforms=tfs)
@@ -110,7 +110,7 @@ def main():
         shuffle=True,                       # Shuffling is important!
         drop_last = True,
         num_workers=args.num_workers,
-        persistent_workers=True
+
     )
 
     #check if everythign went okay
