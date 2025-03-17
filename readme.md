@@ -67,9 +67,9 @@ conclusion/next steps
 programming tasks todo: (for vineseg)
 
 1. train FastSIAM:
-    - resnet18 (done-ish) - new augs todo (v3)
+    - resnet18 (done)
     - resnet50
-    - swin-tiny (in progress)
+    - swin-tiny (done)
 2. make resnet18-seg, resnet50-seg and swin-tiny-seg heads 
     - 2a: make swin-tiny-seg head
     - 2b: make resnet50-seg (prolly resnset18 works)

@@ -71,7 +71,10 @@ def visualize_predictions(model, dataloader, device, num_samples=4, class_names=
             preds = torch.argmax(logits, dim=1)
     elif model_type_name == "RandomForestSegmentation":
         print("RandomForest identified")
-        preds = model.predict(images)
+        preds = []
+        for i in range(num_samples):
+            image = images[i]
+            preds.append(torch.tensor(model.predict(image)))
     else:
         with torch.no_grad():
             logits = model(images)

@@ -525,7 +525,7 @@ class SwinBackbone(nn.Module):
             feature_dims['layer4'] = self.swin.layers[3].blocks[0].mlp.fc2.out_features
         
         return feature_dims
-        
+            
     def forward(self, x):
         """
         Forward pass through Swin Transformer, extracting features at each stage.
@@ -539,42 +539,44 @@ class SwinBackbone(nn.Module):
         features = {}
         
         # Initial processing
-        x = self.swin.patch_embed(x)
-        original_shape = x.shape  # Save shape for reference
+        x = self.swin.patch_embed(x)  # Shape: [B, H, W, C]
         
-        # Add positional embedding if present
-        if hasattr(self.swin, 'absolute_pos_embed') and self.swin.absolute_pos_embed is not None:
-            x = x + self.swin.absolute_pos_embed
+        # Store the original shape to reference H and W
+        B, H, W, C = x.shape
         
-        # Apply dropout
-        x = self.swin.pos_drop(x)
-        
-        # Store stem features (after patch embedding)
-        # Need to reshape from [B, L, C] to [B, C, H, W]
-        H, W = original_shape[2], original_shape[3]
-        stem_features = x.permute(0, 2, 1).reshape(-1, self.feature_dims['stem'], H, W)
+        # Store stem features - convert from [B, H, W, C] to [B, C, H, W]
+        stem_features = x.permute(0, 3, 1, 2)  # Now in BCHW format
         features['stem'] = stem_features
         
+        # Apply dropout if available
+        if hasattr(self.swin, 'pos_drop'):
+            x = self.swin.pos_drop(x)
+        elif hasattr(self.swin, 'drop'):
+            x = self.swin.drop(x)
+        
         # Process through Swin stages
-        # Stage 1
+        # The rest will depend on how your layers process the data
+        # You'll need to adapt based on the expected input/output shapes
+        
+        # Stage 1 - Check the expected input format for layers[0]
         x = self.swin.layers[0](x)
-        H1, W1 = H, W  # Same resolution as stem for first stage
-        features['layer1'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer1'], H1, W1)
+        # Assuming x is still [B, H, W, C] format
+        features['layer1'] = x.permute(0, 3, 1, 2)  # Convert to [B, C, H, W]
         
-        # Stage 2 (2x downsampling)
+        # Stage 2 - similar pattern
         x = self.swin.layers[1](x)
-        H2, W2 = H1 // 2, W1 // 2  # Downsampled by 2x
-        features['layer2'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer2'], H2, W2)
+        H2, W2 = H // 2, W // 2  # Assuming downsampling
+        features['layer2'] = x.permute(0, 3, 1, 2)
         
-        # Stage 3 (4x downsampling from original)
+        # Stage 3
         x = self.swin.layers[2](x)
-        H3, W3 = H2 // 2, W2 // 2  # Downsampled by 2x again
-        features['layer3'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer3'], H3, W3)
+        H3, W3 = H2 // 2, W2 // 2
+        features['layer3'] = x.permute(0, 3, 1, 2)
         
-        # Stage 4 (8x downsampling from original)
+        # Stage 4
         x = self.swin.layers[3](x)
-        H4, W4 = H3 // 2, W3 // 2  # Downsampled by 2x again
-        features['layer4'] = x.permute(0, 2, 1).reshape(-1, self.feature_dims['layer4'], H4, W4)
+        H4, W4 = H3 // 2, W3 // 2
+        features['layer4'] = x.permute(0, 3, 1, 2)
         
         # Create global features
         features['pooled'] = self.avgpool(features['layer4'])
@@ -1153,8 +1155,8 @@ class SegmentationModel(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, 
             mode='min', 
-            factor=0.5, 
-            patience=5,
+            factor=0.1, 
+            patience=3,
 
         )
         
