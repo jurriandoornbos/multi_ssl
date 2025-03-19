@@ -201,3 +201,77 @@ def semi_supervised_collate_fn(batch):
         unlabeled_batch = torch.zeros((0, *sample_img.shape), dtype=sample_img.dtype, device=sample_img.device)
     
     return labeled_batch, unlabeled_batch
+
+def semi_supervised_collate_fn(batch):
+    """
+    Custom collate function for semi-supervised learning that handles
+    both labeled and unlabeled samples in the same batch.
+    
+    Each item in the batch is (image, mask, is_labeled) where:
+    - For labeled data: mask is a tensor, is_labeled is True
+    - For unlabeled data: mask is None, is_labeled is False
+    
+    If the number of labeled and unlabeled samples is not equal,
+    this function duplicates samples from the smaller set to match the larger set.
+    
+    Returns:
+        tuple: (labeled_batch, unlabeled_batch)
+            - labeled_batch: (images, masks) tuple of equal-sized tensors
+            - unlabeled_batch: tensor of unlabeled images of the same batch size
+    """    
+    # Separate labeled and unlabeled samples
+    labeled_samples = [(img, mask) for img, mask, is_labeled in batch if is_labeled and mask is not None]
+    unlabeled_samples = [img for img, mask, is_labeled in batch if not is_labeled or mask is None]
+    
+    # Process labeled data
+    if labeled_samples:
+        labeled_images, labeled_masks = zip(*labeled_samples)
+        labeled_images = torch.stack(labeled_images)
+        labeled_masks = torch.stack(labeled_masks)
+    else:
+        # Create empty tensors with the correct dimensionality
+        # Use the shape from the first element's image to get dimensions
+        sample_img = batch[0][0]
+        labeled_images = torch.zeros((0, *sample_img.shape), dtype=sample_img.dtype, device=sample_img.device)
+        labeled_masks = torch.zeros((0,), dtype=torch.long, device=sample_img.device)
+    
+    # Process unlabeled data
+    if unlabeled_samples:
+        unlabeled_batch = torch.stack(unlabeled_samples)
+    else:
+        # Create empty tensor with the correct dimensionality
+        sample_img = batch[0][0]
+        unlabeled_batch = torch.zeros((0, *sample_img.shape), dtype=sample_img.dtype, device=sample_img.device)
+    
+    # Check if labeled and unlabeled counts are equal
+    num_labeled = labeled_images.size(0)
+    num_unlabeled = unlabeled_batch.size(0)
+    
+    # If counts are not equal and both have at least one sample, duplicate to match
+    if num_labeled != num_unlabeled:
+        if num_labeled > 0 and num_unlabeled > 0:
+            if num_labeled < num_unlabeled:
+                # Duplicate labeled samples to match unlabeled count
+                repeat_count = (num_unlabeled + num_labeled - 1) // num_labeled  # Ceiling division
+                labeled_images_list = [labeled_images]
+                labeled_masks_list = [labeled_masks]
+                
+                for _ in range(repeat_count - 1):
+                    labeled_images_list.append(labeled_images)
+                    labeled_masks_list.append(labeled_masks)
+                
+                labeled_images = torch.cat(labeled_images_list, dim=0)[:num_unlabeled]
+                labeled_masks = torch.cat(labeled_masks_list, dim=0)[:num_unlabeled]
+                
+            else:  # num_unlabeled < num_labeled
+                # Duplicate unlabeled samples to match labeled count
+                repeat_count = (num_labeled + num_unlabeled - 1) // num_unlabeled  # Ceiling division
+                unlabeled_list = [unlabeled_batch]
+                
+                for _ in range(repeat_count - 1):
+                    unlabeled_list.append(unlabeled_batch)
+                
+                unlabeled_batch = torch.cat(unlabeled_list, dim=0)[:num_labeled]
+    
+    labeled_batch = (labeled_images, labeled_masks)
+    return labeled_batch, unlabeled_batch

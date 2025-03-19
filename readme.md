@@ -59,61 +59,12 @@ related works - sota ssl, sota ssl remote sensing-sats, then what is left?
 
 methods - Training dataset, SSL FastSiam, training params, segheads, evaluation tasks
 results - results!
-
+    - Pretraining systematically outperforms end to end, but margin is small
+    - 1 label training is slightly better with pretraining
+    - single label, single domain is best for simple model: Randomforest outperforms
+    
 discussion - complexity of model impacts, resource use of training, limitations in evaluation
 
 conclusion/next steps
 
 programming tasks todo: (for vineseg)
-
-1. train FastSIAM:
-    - resnet18 (done)
-    - resnet50 (done)
-    - swin-tiny (done)
-2. make resnet18-seg, resnet50-seg and swin-tiny-seg heads 
-    - 2a: make swin-tiny-seg head
-    - 2b: make resnet50-seg (prolly resnset18 works)
-3. train 1-shot example:
-    - 3a make 1-shot dataset Done
-    - 3b train:
-        - resnet18-seg pretrained Done
-        - resnet18-seg untrained
-        - resnet50-seg pretrained
-        - resnet50-seg untrained
-        - swintiny-seg pretrained
-        - swintiny-seg untrained
-
-        - randomforest
-
-4. show validation loss per model
-    - pretraining acts as a great regularizer!
-
-5. Therefore: 
-    - accuracy results pretraining last-model VS low-validation-loss selected model on all datasets
-
-    Metrics on X axis:
-    dataset esac2, valdoeiro, qbaixo
-    iou, f1, accuracy, +p values of those scores
-
-    Models on y axis:
-
-        - resnet18-seg pretrained
-        - resnet18-seg untrained
-        - resnet50-seg pretrained
-        - resnet50-seg untrained
-        - swintiny-seg pretrained
-        - swintiny-seg untrained
-
-        - randomforest
-    
-
-    f1-score VS params plots
-    
-    - visualize results pretraining 1-shot performance of last-model VS low-validation-loss selected model (2imgs per model, 6 models = 12 imgs)
-
-How about a randomforest classifier? with 1 label
-
-0-shot performance:
-
-
-- semi supervised tuning along........

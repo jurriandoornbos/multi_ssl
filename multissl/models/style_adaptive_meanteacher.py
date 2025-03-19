@@ -1090,6 +1090,8 @@ class GANMeanTeacher(pl.LightningModule):
         # For tracking training progress
         self.step_count = 0
         self._current_epoch = 0
+        #for dopuble model optimzers
+        self.automatic_optimization = False
         
         # Save hyperparameters for logging
         self.save_hyperparameters(ignore=['student', 'teacher', 'gen_u2l', 'disc_labeled'])
@@ -1220,73 +1222,78 @@ class GANMeanTeacher(pl.LightningModule):
         else:
             return torch.tensor(0.0, device=real_features[layers[0]].device)
     
-    def training_step(self, batch, batch_idx, optimizer_idx=0):
+    def training_step(self, batch, batch_idx):
         """
-        Training step with alternating optimization between segmentation and style transfer.
+        Training step with manual optimization between segmentation and style transfer.
         
         Args:
             batch: Tuple of (labeled_batch, unlabeled_batch)
             batch_idx: Batch index
-            optimizer_idx: Index of optimizer being used (0: segmentation, 1: style transfer)
             
         Returns:
-            Loss for the current optimization step
+            None (losses are handled with manual optimization)
         """
+        # Get optimizers
+        seg_optimizer, style_optimizer = self.optimizers()
+        
         labeled_batch, unlabeled_batch = batch
         labeled_images, labeled_masks = labeled_batch
         unlabeled_images = unlabeled_batch
         
         # Skip empty batches
         if labeled_images.size(0) == 0 or unlabeled_images.size(0) == 0:
-            dummy_loss = torch.tensor(0.0, device=self.device)
-            return dummy_loss
+            return None
         
         # Get current weights
         consistency_weight = self._get_current_consistency_weight()
         style_weight = self._get_current_style_weight()
         
-        # Segmentation optimization step (optimizer_idx = 0)
-        if optimizer_idx == 0:
-            # Generate domain-adapted images (unlabeled→labeled)
-            with torch.no_grad():
-                unlabeled_as_labeled = self.gen_u2l(unlabeled_images)
-            
-            # Teacher forward pass
-            with torch.no_grad():
-                teacher_logits_l = self.teacher(labeled_images)
-                teacher_logits_u = self.teacher(unlabeled_as_labeled)
-            
-            # Student forward pass
-            student_logits_l = self.student(labeled_images)
-            student_logits_u = self.student(unlabeled_as_labeled)
-            
-            # Calculate supervised loss on labeled data
-            supervised_loss = self.student.focal_loss(student_logits_l, labeled_masks)
-            
-            # Calculate pseudo-label loss on adapted unlabeled data
-            pseudo_loss = self.focal_pseudo_loss(
-                student_logits_u, teacher_logits_u, 
-                threshold=self.confidence_threshold
-            )
-            
-            # Combined segmentation loss
-            seg_loss = supervised_loss + consistency_weight * pseudo_loss
-            
-            # Log losses
-            self.log("train_supervised_loss", supervised_loss, prog_bar=True)
-            self.log("train_pseudo_loss", pseudo_loss)
-            self.log("train_seg_total_loss", seg_loss, prog_bar=True)
-            self.log("train_consistency_weight", consistency_weight)
-            
-            return seg_loss
+        # ==========================
+        # STEP 1: Segmentation Optimization
+        # ==========================
         
-        # Style transfer optimization step (optimizer_idx = 1)
-        elif optimizer_idx == 1:
-            # Only update style transfer every N steps
-            if self.step_count % self.update_style_every != 0:
-                dummy_loss = torch.tensor(0.0, device=self.device)
-                return dummy_loss
-            
+        # Generate domain-adapted images (unlabeled→labeled)
+        with torch.no_grad():
+            unlabeled_as_labeled = self.gen_u2l(unlabeled_images)
+        
+        # Teacher forward pass
+        with torch.no_grad():
+            teacher_logits_l = self.teacher(labeled_images)
+            teacher_logits_u = self.teacher(unlabeled_as_labeled)
+        
+        # Student forward pass
+        student_logits_l = self.student(labeled_images)
+        student_logits_u = self.student(unlabeled_as_labeled)
+        
+        # Calculate supervised loss on labeled data
+        supervised_loss = self.student.focal_loss(student_logits_l, labeled_masks)
+        
+        # Calculate pseudo-label loss on adapted unlabeled data
+        pseudo_loss = self.focal_pseudo_loss(
+            student_logits_u, teacher_logits_u, 
+            threshold=self.confidence_threshold
+        )
+        
+        # Combined segmentation loss
+        seg_loss = supervised_loss + consistency_weight * pseudo_loss
+        
+        # Optimize segmentation model
+        seg_optimizer.zero_grad()
+        self.manual_backward(seg_loss)
+        seg_optimizer.step()
+        
+        # Log losses
+        self.log("train_supervised_loss", supervised_loss, prog_bar=True)
+        self.log("train_pseudo_loss", pseudo_loss)
+        self.log("train_seg_total_loss", seg_loss, prog_bar=True)
+        self.log("train_consistency_weight", consistency_weight)
+        
+        # ==========================
+        # STEP 2: Style Transfer Optimization 
+        # ==========================
+        
+        # Only update style transfer every N steps
+        if self.step_count % self.update_style_every == 0:
             # Apply style transfer for unlabeled images
             fake_labeled = self.gen_u2l(unlabeled_images)
             
@@ -1335,6 +1342,11 @@ class GANMeanTeacher(pl.LightningModule):
             # Scale by current style weight
             total_style_loss = style_weight * style_loss
             
+            # Optimize style transfer models
+            style_optimizer.zero_grad()
+            self.manual_backward(total_style_loss)
+            style_optimizer.step()
+            
             # Log style transfer losses
             self.log("train_gen_u2l_loss", gen_u2l_loss)
             self.log("train_disc_labeled_loss", disc_labeled_loss)
@@ -1342,9 +1354,6 @@ class GANMeanTeacher(pl.LightningModule):
             self.log("train_feature_loss", feature_loss)
             self.log("train_total_style_loss", total_style_loss, prog_bar=True)
             self.log("train_style_weight", style_weight)
-            
-            # Return the combined style transfer loss
-            return total_style_loss
     
     def focal_pseudo_loss(self, student_logits, teacher_logits, gamma=2.0, threshold=0.6):
         """
