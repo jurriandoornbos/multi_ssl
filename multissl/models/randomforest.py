@@ -408,3 +408,33 @@ class RandomForestSegmentation:
         self.clf = joblib.load(filepath)
         print(f"Model loaded from {filepath}")
         return self
+        
+    def estimate_rf_parameters(self):
+        """
+        Estimate the number of parameters in a trained Random Forest model
+        
+        Parameters:
+        rf_model: A trained RandomForestClassifier
+        n_features: Number of features in the dataset
+        
+        Returns:
+        total_parameters: Estimated number of parameters
+        """
+        total_parameters = 0
+        
+        # For each tree in the forest
+        for tree in self.clf.estimators_:
+            n_nodes = tree.tree_.node_count
+            
+            # Each non-leaf node stores:
+            # - The feature index to split on (1 parameter)
+            # - The threshold value for the split (1 parameter)
+            
+            # Count non-leaf nodes
+            n_non_leaf = np.sum(tree.tree_.children_left != -1)
+            
+            # Parameters for non-leaf nodes: 2 per node (feature index + threshold)
+            total_parameters += 2 * n_non_leaf
+        
+        print("Estimated RF params:", str(total_parameters))
+        return total_parameters

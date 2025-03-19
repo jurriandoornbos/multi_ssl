@@ -1156,7 +1156,7 @@ class SegmentationModel(pl.LightningModule):
             optimizer, 
             mode='min', 
             factor=0.1, 
-            patience=3,
+            patience=10,
 
         )
         
