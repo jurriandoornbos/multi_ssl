@@ -280,14 +280,7 @@ class FeaturePCA(pl.LightningModule):
             self.pca = None
             self.register_buffer('components', torch.zeros(out_channels, feature_channels))
             self.register_buffer('mean', torch.zeros(feature_channels))
-        
-        # Upsampling layer to original image size
-        self.upsampler = nn.Sequential(
-            nn.Conv2d(out_channels, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, out_channels, kernel_size=3, padding=1)
-        )
-        
+
         # Training parameters
         self.lr = lr
         self.weight_decay = weight_decay
@@ -417,6 +410,7 @@ class FeaturePCA(pl.LightningModule):
             Visualization tensor of shape [B, out_channels, H, W]
         """
         # Extract features from the backbone
+        x 
         features = self.feature_extractor(x)
         
         # Get features from the specified layer
@@ -437,20 +431,9 @@ class FeaturePCA(pl.LightningModule):
         
         # Enhance colors for more vibrant visualization
         enhanced_features = self._enhance_colors(reduced_features)
-        
-        # Upsample to original image size
-        upsampled = F.interpolate(
-            enhanced_features,
-            size=(self.img_size, self.img_size),
-            mode='bilinear',
-            align_corners=False
-        )
-        
-        # Apply final convolutional layers to refine the visualization
-        output = self.upsampler(upsampled)
-        
+                
         # Apply color enhancement again after upsampling
-        output = self._post_process_colors(output)
+        output = self._post_process_colors(enhanced_features)
         
         return output
 
@@ -475,7 +458,7 @@ class FeaturePCA(pl.LightningModule):
             centered = rgb_features - rgb_features.mean(dim=(2, 3), keepdim=True)
             
             # Scale features to increase contrast
-            scaled = centered * 1
+            scaled = centered * 1.0
             
             # Apply non-linear transformation to emphasize strong activations
             enhanced = torch.tanh(scaled) * 0.5 + 0.5  # Map to [0, 1]

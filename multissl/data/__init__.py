@@ -11,3 +11,5 @@ from .transforms import get_transform
 from .mask_loader import SegmentationDataset
 from .semi_supervised_dataset import SemiSupervisedSegmentationDataset,semi_supervised_collate_fn
 from.seg_transforms import create_mean_teacher_augmentations
+from .ortho_dataset import OrthoChipDataset
+
