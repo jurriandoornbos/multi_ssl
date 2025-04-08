@@ -243,3 +243,114 @@ def visualize_batch_semi(batch, num_samples=4, class_names=None, num_classes=Non
     plt.subplots_adjust(right=0.9)  # Make room for colorbar
     
     return fig
+
+
+def visualize_features_from_model(model, dataloader, device, num_samples=4):
+    """
+    Visualize model's internal feature representations using PCA on a batch of data.
+    
+    Args:
+        model: The model to visualize (SWIN-T or other model architectures)
+        dataloader: DataLoader containing data
+        device: Device to run inference on ('cuda' or 'cpu')
+        num_samples: Number of samples to visualize
+    """
+    # Get a batch from the dataloader
+    batch = next(iter(dataloader))
+
+    images, features = model.visualize_batch(batch)    
+    # Create a figure with two rows (images and feature visualizations)
+
+    # Generate direction visualization
+    direction_features = []
+    magnitude_features = []
+    for i in range(len(features)):
+        # Assuming features[i] is a tensor with shape [H, W, C]
+        feature = features[i].cpu().numpy() if torch.is_tensor(features[i]) else features[i]
+        feature = np.transpose(feature, (1, 2, 0))
+        # Compute L2 norm along channel dimension
+        magnitude = np.linalg.norm(feature, axis=2)
+        # Normalize to [0, 1]
+        magnitude = (magnitude - magnitude.min()) / (magnitude.max() - magnitude.min() + 1e-10)
+        # Apply colormap
+        magnitude_vis = plt.cm.get_cmap('rainbow')(magnitude)[:, :, :3]  # Drop alpha channel
+        magnitude_features.append(magnitude_vis)
+
+        # Normalize each pixel's vector to unit length
+        norms = np.linalg.norm(feature[:, :, :3], axis=2, keepdims=True)
+        directions = feature[:, :, :3] / (norms + 1e-10)
+        # Map from [-1, 1] to [0, 1] for visualization
+        direction_vis = (directions + 1) / 2
+        direction_features.append(direction_vis)
+    
+    fig, axes = plt.subplots(2, num_samples, figsize=(15, 6))
+    
+    for i in range(num_samples):
+        if i >= len(images):
+            # Skip if we don't have enough samples
+            break
+            
+        # Get current image
+        image = images[i]
+        feature = features[i]
+
+        # Convert image for visualization
+        image_np = convert_image_for_display(image)
+  
+        feature_np = convert_image_for_display(feature)
+   
+                # Plot image
+        axes[0, i].imshow(image_np)
+        axes[0, i].set_title(f"Image {i}")
+        axes[0, i].axis('off')
+       
+        # Plot feature visualization using PCA
+        axes[1, i].imshow(feature_np)
+        axes[1, i].set_title(f"Feature PCA {i}")
+        axes[1, i].axis('off')
+
+    plt.tight_layout()
+    plt.show()
+    
+    return images
+
+def convert_image_for_display(image_tensor):
+    """
+    Convert a tensor image to numpy array for visualization
+    
+    Args:
+        image_tensor: Input image tensor [C, H, W]
+        
+    Returns:
+        Numpy array representing the image [H, W, 3]
+    """
+    # Convert to numpy and detach from graph
+    image = image_tensor.cpu().detach().numpy()
+    
+    # Transpose from [C, H, W] to [H, W, C]
+    if len(image.shape) == 3 and image.shape[0] <= 4:
+        image = np.transpose(image, (1, 2, 0))
+    
+    # Handle different channel counts
+    if len(image.shape) == 2:
+        # Single channel - replicate to 3 channels
+        image = np.stack([image] * 3, axis=2)
+    elif image.shape[2] == 1:
+        # Single channel in dim 2 - replicate to 3 channels
+        image = np.concatenate([image] * 3, axis=2)
+    elif image.shape[2] == 2:
+        # Two channels - add a zero channel
+        zeros = np.zeros((image.shape[0], image.shape[1], 1))
+        image = np.concatenate([image, zeros], axis=2)
+    elif image.shape[2] > 3:
+        # More than 3 channels - use first 3
+        image = np.stack([image[:, :, 3], image[:, :, 1], image[:, :, 0]], axis=-1)  # (H, W, 3)
+        
+    
+    # Normalize the image for display
+    image_min = image.min()
+    image_max = image.max()
+    if image_max > image_min:
+        image = (image - image_min) / (image_max - image_min)
+    
+    return image

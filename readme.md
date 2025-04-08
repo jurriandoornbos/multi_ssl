@@ -59,10 +59,12 @@ related works - sota ssl, sota ssl remote sensing-sats, then what is left?
 
 methods - Training dataset, SSL FastSiam, training params, segheads, evaluation tasks
 results - results!
-    - Pretraining systematically outperforms end to end, but margin is small
-    - 1 label training is slightly better with pretraining
-    - single label, single domain is best for simple model: Randomforest outperforms
-    
+    - Pretraining outperforms end-to-end across all metrics
+    - when training variety is high, a more complex model captures that better 
+    - rf has much lower std err (2 orders of magnitude)
+    - generalization score of single label training, fully supervised is not good enough 0.8/0.9
+    - Semi-supervised though?
+
 discussion - complexity of model impacts, resource use of training, limitations in evaluation
 
 conclusion/next steps
