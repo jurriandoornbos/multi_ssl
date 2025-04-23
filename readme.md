@@ -20,7 +20,7 @@
 
 ![Downloads](https://img.shields.io/github/downloads/jurriandoornbos/multi_ssl/total) ![Contributors](https://img.shields.io/github/contributors/jurriandoornbos/multi_ssl?color=dark-green) ![Forks](https://img.shields.io/github/forks/jurriandoornbos/multi_ssl?style=social) ![Stargazers](https://img.shields.io/github/stars/jurriandoornbos/multi_ssl?style=social) ![Issues](https://img.shields.io/github/issues/jurriandoornbos/multi_ssl) ![License](https://img.shields.io/github/license/jurriandoornbos/multi_ssl)
 
-![Library overview](saved_images/overview.png){width=800}
+<img src="saved_images/overview.png" width=800 alt="Library Overview">
 
 ## Table Of Contents
 
@@ -43,7 +43,8 @@ The library builds upon PyTorch Lightning and LightlySSL to provide flexible, pr
 
 ### Self-Supervised Learning
 
-![FSIAM overview](saved_images/fastsiamoverview.png){width=400}
+<img src="saved_images/fastsiamoverview.png" width=400 alt="FSIAM overview">
+
 MultiSSL implements several state-of-the-art self-supervised learning methods specially adapted for multi-spectral imagery:
 
 - **FastSiam**: An efficient implementation of SimSiam with multi-view capabilities for multi-spectral imagery
@@ -51,7 +52,8 @@ MultiSSL implements several state-of-the-art self-supervised learning methods sp
 
 ### Orthomosaic Processing
 
-![Orthoviz](saved_images/orthovis.png){width=400}
+<img src="saved_images/orthovis.png" width=400 alt="ortho visualization">
+
 Specialized tools for working with large orthomosaic imagery:
 
 - **OrthoChipDataset**: Dataset Class for processing of orthomosaics + predictions in tiles
@@ -59,7 +61,8 @@ Specialized tools for working with large orthomosaic imagery:
 
 ### Semantic Segmentation Models
 
-![Semantic Segmentation Model architecture](saved_images/fullysupeSeg.png){width=400}
+<img src="saved_images/fullysupeSeg.png" width=400 alt="fully supervised">
+
 Lightning classes for Semantic segmentation based on the same backbones from FastSiam
 
 - **SegmentationModel**: Using the backbone from Swin, or Resnet to build a UNet style decoder
@@ -284,7 +287,7 @@ MultiSSL includes the following models:
 
 - **Self-Supervised Models**
   - FastSiam: A multi-view contrastive learning model
-    * Pretrained backbones:
+    * Pretrained backbones (last.ckpt is after 2 full passes on the dataset):
     - [ResNet18 (11M param backbone)](https://e.pcloud.link/publink/show?code=kZREFqZ8514cPJqIjp9yuvOMwg2RS6Cyet7)
     - [SWIN-T Tiny (27.5M param backbone)](https://e.pcloud.link/publink/show?code=kZ4EFqZ5KNjg280mKmceWlLOq1VUS3o1Drk)
 
