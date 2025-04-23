@@ -4,6 +4,7 @@ checkpoints*
 dataset
 notebooks/segmentation_checkpoints
 notebooks/vineseg_checkpoints
+notebooks/figs
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

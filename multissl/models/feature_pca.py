@@ -190,6 +190,7 @@ class FeaturePCA(pl.LightningModule):
         self, 
         backbone_type="resnet50",
         pretrained_path=None,
+        loaded_weights = None,
         in_channels=4,
         layer="layer4",
         out_channels=3,
@@ -197,7 +198,8 @@ class FeaturePCA(pl.LightningModule):
         lr=1e-4,
         weight_decay=1e-5,
         use_online_pca=True,
-        normalize_output=True
+        normalize_output=True,
+        enhance = False,
     ):
         super().__init__()
         
@@ -207,6 +209,7 @@ class FeaturePCA(pl.LightningModule):
         self.out_channels = out_channels
         self.use_online_pca = use_online_pca
         self.normalize_output = normalize_output
+        self.enhance = enhance
         
         # Initialize the appropriate backbone for feature extraction
         if backbone_type.startswith("resnet"):
@@ -254,6 +257,11 @@ class FeaturePCA(pl.LightningModule):
         if pretrained_path:
             self._load_pretrained_weights(pretrained_path)
         
+        if loaded_weights:
+            name = loaded_weights.__class__.__name__
+            if name in ["SwinBackbone", "ResNetBackbone", "ResNetBackboneUNet", "ViTExtractor"]:  
+                self.feature_extractor = loaded_weights
+
         # Detect feature dimensions by running a forward pass
         with torch.no_grad():
             dummy_input = torch.zeros(1, in_channels, img_size, img_size)
@@ -287,7 +295,7 @@ class FeaturePCA(pl.LightningModule):
         
         # For tracking when PCA is computed
         self.pca_computed = False
-        self.save_hyperparameters(ignore=['feature_extractor'])
+        self.save_hyperparameters(ignore=['feature_extractor', "loaded_weights"])
     
     def _modify_resnet_for_4_channels(self, resnet, in_channels):
         """Modifies the first ResNet conv layer to accept multi-channel input."""
@@ -430,10 +438,14 @@ class FeaturePCA(pl.LightningModule):
             reduced_features = self._apply_pca(layer_features)
         
         # Enhance colors for more vibrant visualization
-        enhanced_features = self._enhance_colors(reduced_features)
+        if self.out_channels ==3 and self.enhance:
+
+            enhanced_features = self._enhance_colors(reduced_features)
                 
-        # Apply color enhancement again after upsampling
-        output = self._post_process_colors(enhanced_features)
+            # Apply color enhancement again after upsampling
+            output = self._post_process_colors(enhanced_features)
+        else:
+            output = reduced_features
         
         return output
 

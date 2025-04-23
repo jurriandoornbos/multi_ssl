@@ -94,7 +94,7 @@ def predict_ortho(
             
             # Forward pass
             outputs = model(chips)
-            outputs = outputs.permute(0,1,3,2)
+            #outputs = outputs.permute(0,1,3,2)
             # Handle different model output formats
             if isinstance(outputs, tuple):
                 outputs = outputs[0]  # Some models return (output, features)
@@ -113,7 +113,7 @@ def predict_ortho(
                     img_coords = tuple(img_coords.numpy())
                 
                 # Get the image coordinates from the original ortho
-                row_min, col_min, row_max, col_max = [int(coord) for coord in img_coords]
+                col_min, row_min, col_max, row_max = [int(coord) for coord in img_coords]
                 
                 # Scale these coordinates to the output dimensions
                 out_row_min = int(row_min * scale_h)
@@ -133,7 +133,7 @@ def predict_ortho(
                 
                 # Get output for this chip
                 chip_output = outputs[i]
-                
+                #chip_output = chip_output.permute(0,1,3,2)
                 # Calculate target dimensions in the output array
                 target_h = out_row_max - out_row_min
                 target_w = out_col_max - out_col_min
@@ -220,11 +220,11 @@ def predict_ortho(
         prediction_da = xr.DataArray(
             prediction_array,
             coords={
-                'class': class_coords,
+                'cls': class_coords,
                 'y': new_y,
                 'x': new_x
             },
-            dims=['class', 'y', 'x']
+            dims=['cls', 'y', 'x']
         )
     else:
         # Binary case
