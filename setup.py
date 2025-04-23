@@ -26,7 +26,9 @@ setup(
         "numpy",
         "opencv-python-headless",
         "tifffile",
-        "wandb"
+        "wandb",
+        "rioxarray",
+        "scikit-learn"
     ],
     classifiers=[
         "Programming Language :: Python :: 3",
