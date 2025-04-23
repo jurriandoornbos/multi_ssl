@@ -35,6 +35,7 @@
 * [License](#license)
   
 ## Summary
+
 MultiSSL is a comprehensive library for self-supervised and semi-supervised learning targeting multi-spectral imagery. It provides implementations of modern representation learning methods specifically tailored for remote sensing and precision agriculture applications using UAVs.
 
 The library builds upon PyTorch Lightning and LightlySSL to provide flexible, production-ready implementations of recent self-supervised learning algorithms. MultiSSL is designed to work with multi-channel data (RGB+NIR and beyond) and provides specialized data transformations and visualization tools for these data types.
