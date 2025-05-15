@@ -148,6 +148,7 @@ python multissl/train.py \
   --seed 42
 
 ```
+python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 4 --num_workers 1 --backbone pasiphae --epochs 1 --dataset_reduce 20
 
 ### Fully supervised segmentation model training
 This simplified code demonstrates how to train a segmentation model for aerial/satellite imagery using MultiSSL:

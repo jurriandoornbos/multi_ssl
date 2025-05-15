@@ -7,7 +7,7 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 
-from .fastsiam import FastSiam
+from .fastsiam import FastSiam, DualObjectiveFastSiam
 
 def build_model(args):
 
@@ -24,4 +24,19 @@ def build_model(args):
             momentum=args.momentum,
             weight_decay=args.weight_decay,
             dataset_size = args.dataset_size)
-        return model
+
+    elif args.ssl_method == "galileo-fastsiam":
+        model = DualObjectiveFastSiam(
+            backbone=args.backbone,
+            hidden_dim=args.hidden_dim,
+            proj_dim=args.proj_dim,
+            pred_dim=args.pred_dim,
+            lr=args.lr,
+            in_channels=args.in_channels,
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay)
+    
+    return model
+        

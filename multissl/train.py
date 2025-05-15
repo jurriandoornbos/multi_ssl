@@ -7,7 +7,7 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 import argparse
-from data import get_transform, tifffile_loader
+from data import get_transform, tifffile_loader, MixedUAVDataset,  multisensor_views_collate_fn, BalancedSampler
 
 from models import build_model
 import pytorch_lightning as pl
@@ -30,8 +30,8 @@ def get_args():
     
     # Self-Supervised Learning Model
     parser.add_argument("--in_channels", type=int, default = 4, help = "Number of input channels of the image")
-    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s", "swin-tiny"], help="Backbone model for SSL")
-    parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["simclr", "simsiam", "fastsiam"], help="SSL method")
+    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s", "swin-tiny", "pasiphae"], help="Backbone model for SSL")
+    parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["fastsiam", "galileo-fastsiam"], help="SSL method")
     parser.add_argument("--hidden_dim", type=int, default=2048, help="Hidden layer dimension")
     parser.add_argument("--proj_dim", type=int, default=256, help="Projection head dimension")
     parser.add_argument("--pred_dim", type=int, default=128, help="Prediction head dimension")
@@ -51,6 +51,8 @@ def get_args():
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training")
     parser.add_argument("--save_every", type=int, default=1000, help="How many stepss between save")
     parser.add_argument("--checkpoint_path", type=str, default=None, help = "Path for resuming from checkpoint")
+    parser.add_argument("--dataset_reduce", type = int, default=None, help = "How many samples in the dataset for testing" )
+    parser.add_argument("--smote", type=bool, default=False, help = "Use Synthetic Minority Oversampling")
     
     args = parser.parse_args()
     return args
@@ -58,27 +60,107 @@ def get_args():
 args = get_args()
 
 def main():
-        
-    pl.seed_everything(args.seed)
-
-    # Create a multiview transform that returns two different augmentations of each image.
+        # Create a multiview transform that returns three different augmentations of each image.
     transform_multispectral = get_transform(args, std_noise  =0.1, 
                                             brightness_factor=0.1 ,
                                             max_shift=0.1)
     tfs = [transform_multispectral for i in range(args.num_views)]
 
     transform_ms = MultiViewTransform(transforms=tfs)
+    sampler = None
 
-    # Create a dataset from your image folder.
-    dataset_train_ms = LightlyDataset(
-        input_dir = args.input_dir,
-        transform = transform_ms,
-    )
-    dataset_train_ms.dataset.loader = tifffile_loader
+    pl.seed_everything(args.seed)
 
-    length_dataset = len(dataset_train_ms)
-    print("Loaded dataset, dataset size: "+ str(length_dataset))
-    args.dataset_size = length_dataset
+    if args.backbone == "pasiphae":
+        batch_size = args.batch_size
+        dataset_train_ms = MixedUAVDataset(
+            root_dir = args.input_dir,
+            transform = transform_ms,
+            reduce_by = args.dataset_reduce
+        )
+
+        length_dataset = len(dataset_train_ms)
+        print("Loaded dataset, dataset size: "+ str(length_dataset))
+        args.dataset_size = length_dataset
+        
+        if args.smote:
+            # Calculate appropriate oversampling factors based on dataset statistics
+            rgb_count = dataset_train_ms.count_by_type['rgb_only']
+            ms_count = dataset_train_ms.count_by_type['ms_only']
+            aligned_count = dataset_train_ms.count_by_type['aligned']
+            
+            # Create balanced sampler
+            sampler = BalancedSampler(
+                dataset_train_ms, 
+                batch_size=batch_size,
+                oversample_factor_ms=4.5,
+                oversample_factor_aligned=1,
+                undersample_rgb=True,
+                undersample_factor = 0.2,
+                balance_mode="both"
+            )
+    
+
+            # Get effective counts after balancing
+            effective_counts = sampler.get_effective_counts()
+            
+            # Calculate dataset size per epoch
+            epoch_size = effective_counts['total']
+            
+            # Ensure epoch size is divisible by batch size
+            batches = epoch_size // batch_size
+            if batches == 0:
+                batches = 1
+            epoch_size = batches * batch_size
+
+            length_dataset = epoch_size
+            print("Loaded dataset per Epoch after SMOTE, dataset size: "+ str(epoch_size))
+                
+
+        if sampler:
+                
+            dataloader_train_ms = torch.utils.data.DataLoader(
+                dataset_train_ms,                            # Pass the dataset to the dataloader.
+                batch_size=args.batch_size,         # A large batch size helps with learning.
+                drop_last = True,
+                sampler=sampler,
+                num_workers=args.num_workers,
+                collate_fn= multisensor_views_collate_fn
+            )
+        else: 
+            dataloader_train_ms = torch.utils.data.DataLoader(
+                dataset_train_ms,                            # Pass the dataset to the dataloader.
+                batch_size=args.batch_size,         # A large batch size helps with learning.
+                shuffle=True,                       # Shuffling is important!
+                drop_last = True,
+                sampler=sampler,
+                num_workers=args.num_workers,
+                collate_fn= multisensor_views_collate_fn
+            )
+
+    else:
+
+        # Create a dataset from your image folder.
+        dataset_train_ms = LightlyDataset(
+            input_dir = args.input_dir,
+            transform = transform_ms,
+        )
+        dataset_train_ms.dataset.loader = tifffile_loader
+
+        length_dataset = len(dataset_train_ms)
+        print("Loaded dataset, dataset size: "+ str(length_dataset))
+        args.dataset_size = length_dataset
+
+            
+        # Build a PyTorch dataloader.
+        dataloader_train_ms = torch.utils.data.DataLoader(
+            dataset_train_ms,                            # Pass the dataset to the dataloader.
+            batch_size=args.batch_size,         # A large batch size helps with learning.
+            shuffle=True,                       # Shuffling is important!
+            drop_last = True,
+            num_workers=args.num_workers,
+
+        )
 
 
     # Step 5: Load FastSiam Model with 4-channel support
@@ -97,21 +179,12 @@ def main():
     )
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval = "step")
 
-    im_monitor = ImageSaverCallback()
+    im_monitor = ImageSaverCallback(args =args)
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
 
-    wandb_logger = pl.loggers.WandbLogger(project="FastSiam", log_model=True)
+    wandb_logger = pl.loggers.WandbLogger(project="FastSiamUAV", log_model=True)
 
-    # Build a PyTorch dataloader.
-    dataloader_train_ms = torch.utils.data.DataLoader(
-        dataset_train_ms,                            # Pass the dataset to the dataloader.
-        batch_size=args.batch_size,         # A large batch size helps with learning.
-        shuffle=True,                       # Shuffling is important!
-        drop_last = True,
-        num_workers=args.num_workers,
-
-    )
 
     #check if everythign went okay
     #plot_first_batch(dataloader_train_ms)

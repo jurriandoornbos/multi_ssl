@@ -21,7 +21,7 @@ class SafeGaussianBlur:
             return cv2.GaussianBlur(img, (self.kernel_size, self.kernel_size), 0)
         elif isinstance(img, torch.Tensor):
             # Convert to numpy, apply blur, convert back
-            is_chw = (img.dim() == 3 and img.shape[0] <= 4)
+            is_chw = (img.dim() == 3 and img.shape[0] <= 5)
             img_np = img.cpu().numpy()
             
             if is_chw:
@@ -76,7 +76,7 @@ class SafeRandomResizedCrop:
     def __call__(self, img):
         # Handle tensor input
         if isinstance(img, torch.Tensor):
-            if img.dim() == 3 and img.shape[0] <= 4:  # CxHxW format
+            if img.dim() == 3 and img.shape[0] <= 5:  # CxHxW format
                 h, w = img.shape[1], img.shape[2]
                 is_chw = True
             else:  # HxWxC format
@@ -228,7 +228,7 @@ class CustomChannelDropout:
                 return img
                 
             if img.dim() == 3:
-                if img.shape[0] <= 4:  # Assume CxHxW format
+                if img.shape[0] <= 5:  # Assume CxHxW format
                     num_channels = img.shape[0]
                     n_drop = min(self.channels_to_drop, num_channels - 1)
                     channels = random.sample(range(num_channels), n_drop)
@@ -267,7 +267,7 @@ class RandomSpectralShift:
             return np.clip(img + shift, 0, 1).astype(np.float32)
         elif isinstance(img, torch.Tensor):
             # For tensors in CHW format
-            if img.dim() == 3 and img.shape[0] <= 4:
+            if img.dim() == 3 and img.shape[0] <= 5:
                 num_channels = img.shape[0]
                 shift = torch.FloatTensor(num_channels).uniform_(-self.max_shift, self.max_shift)
                 # Reshape shift to match the tensor dimensions for broadcasting
@@ -301,7 +301,7 @@ class ToTensorSafe:
     def __call__(self, img):
         if isinstance(img, np.ndarray):
             # Handle different numpy array formats
-            if img.ndim == 3 and img.shape[2] <= 4:  # HxWxC format
+            if img.ndim == 3 and img.shape[2] <= 5:  # HxWxC format
                 img = np.transpose(img, (2, 0, 1))  # Convert to CxHxW
             return torch.from_numpy(img).float()
         elif isinstance(img, torch.Tensor):
@@ -324,7 +324,7 @@ class Transpose:
     def __call__(self, img):
         if isinstance(img, np.ndarray):
             return img.transpose(2, 0, 1)
-        elif isinstance(img, torch.Tensor) and img.dim() == 3 and img.shape[-1] <= 4:
+        elif isinstance(img, torch.Tensor) and img.dim() == 3 and img.shape[-1] <= 5:
             # Assuming HWC format, convert to CHW
             return img.permute(2, 0, 1)
         return img
@@ -397,13 +397,13 @@ class JointTransform:
         
         if is_tensor:
             img_np = img.cpu().numpy()
-            if img.dim() == 3 and img.shape[0] <= 4:  # CxHxW format
+            if img.dim() == 3 and img.shape[0] <= 5:  # CxHxW format
                 img_np = np.transpose(img_np, (1, 2, 0))  # Convert to HxWxC
                 is_chw_format = True
         else:
             img_np = img
             # Check if numpy array is in CHW format
-            if img_np.ndim == 3 and img_np.shape[0] <= 4:
+            if img_np.ndim == 3 and img_np.shape[0] <= 5:
                 img_np = np.transpose(img_np, (1, 2, 0))
                 is_chw_format = True
             
