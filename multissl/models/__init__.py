@@ -6,4 +6,6 @@ from .studentteacher import MeanTeacherSegmentation
 from .style_adaptive_meanteacher import CycleMeanTeacher, GANMeanTeacher
 from .multisensor_swin import VariableBandSwinTransformer
 from .feature_pca import FeaturePCA, OnlineFeaturePCA
+from .msrgb_convnext import MSRGBConvNeXt
+from .msrgb_convnext_upernet import MSRGBConvNeXtUPerNet, MSRGBConvNeXtUPerNetModule
 from .pasiphae_upernet import PasiphaeUPerNetModule, PasiphaeUPerNet

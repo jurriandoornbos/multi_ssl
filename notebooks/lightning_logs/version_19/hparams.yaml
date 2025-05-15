@@ -1,0 +1,12 @@
+num_classes: 2
+rgb_in_channels: 3
+ms_in_channels: 5
+model_size: tiny
+fusion_strategy: early
+fusion_type: attention
+learning_rate: 0.0001
+weight_decay: 0.0001
+use_aux_loss: false
+aux_weight: 0.4
+class_weights: null
+pretrained_backbone: null

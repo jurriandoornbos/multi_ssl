@@ -15,7 +15,7 @@ from torch import nn
 from lightly.loss import NegativeCosineSimilarity
 from lightly.models.modules import SimSiamPredictionHead, SimSiamProjectionHead
 from .lr import WarmupCosineAnnealingScheduler
-from .msrgb_vit import MSRGBViT
+from .msrgb_convnext import MSRGBConvNeXtFeatureExtractor
 
 from einops import rearrange
 
@@ -172,19 +172,9 @@ class FastSiam(pl.LightningModule):
             self.using_pasiphae = False
             
         elif backbone == "pasiphae":
-            self.backbone =  MSRGBViT( img_size=224,
-                                patch_size=16,
-                                embed_dim= 192,
-                                depth=12,
-                                num_heads=3,
-                                mlp_ratio=4.0,
-                                qkv_bias=True,
-                                drop_rate=0.0,
-                                attn_drop_rate=0.0,
-                                norm_layer=nn.LayerNorm,
-                                use_channel_embeds=True)
-            
-            backbone_dim = 192 # output dim for swin tiny
+            self.backbone =  MSRGBConvNeXtFeatureExtractor(
+                model_name = "tiny")
+            backbone_dim = 768 # output dim for convnext tiny   
             self.using_vit = False
             self.using_pasiphae = True
 
@@ -235,6 +225,7 @@ class FastSiam(pl.LightningModule):
             f = self.backbone(x)         
         else:
             f = self.feature_extractor.backbone_forward(x)
+
         
         
         z = self.projection_head(f)
@@ -296,7 +287,7 @@ class FastSiam(pl.LightningModule):
                     sample_rgb = rgb_view[i:i+1]
                     
                     # Pass through backbone
-                    output = self.backbone(rgb=sample_rgb)
+                    output = self.backbone(rgb=sample_rgb)["flat"]
                     
                     # Store output and sample info
                     all_outputs.append(output)
@@ -310,7 +301,7 @@ class FastSiam(pl.LightningModule):
                     sample_ms = ms_view[i:i+1]
                     
                     # Pass through backbone
-                    output = self.backbone(ms=sample_ms)
+                    output = self.backbone(ms=sample_ms)["flat"]
                     
                     # Store output and sample info
                     all_outputs.append(output)
@@ -326,7 +317,7 @@ class FastSiam(pl.LightningModule):
                     sample_ms = ms_view[i:i+1]
                     
                     # Pass through backbone
-                    output = self.backbone(rgb=sample_rgb, ms=sample_ms)
+                    output = self.backbone(rgb=sample_rgb, ms=sample_ms)["flat"]
                     
                     # Store output and sample info
                     all_outputs.append(output)
