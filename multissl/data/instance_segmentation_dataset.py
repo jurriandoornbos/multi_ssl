@@ -1046,6 +1046,7 @@ class InstanceSegJointTransform:
             img_np = img_np.astype(np.float32)
             if img_np.max() > 1.0:
                 img_np = img_np / 255.0
+                img_np = img_np.astype(np.float32)
         
         # Apply random crop
         top, left, new_h, new_w = self.random_state['crop']
@@ -1077,15 +1078,11 @@ class InstanceSegJointTransform:
             img_np = np.clip(img_np + shift, 0, 1)
         
         # Convert back to tensor if input was tensor
-        if is_tensor:
-            if is_chw:
-                # Convert back to CHW format
-                img_np = np.transpose(img_np, (2, 0, 1))
-            img_tensor = torch.from_numpy(img_np).float()
-            return img_tensor
-        else:
-            return img_np
-    
+        img_np = np.transpose(img_np, (2,0,1))
+        img_tensor = torch.from_numpy(img_np).float()
+        return img_tensor
+
+
     def _apply_transforms_to_mask(self, mask, is_heatmap=False):
         """Apply same spatial transforms to mask/heatmap with appropriate interpolation"""
         # Handle different input types
