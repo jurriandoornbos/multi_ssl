@@ -231,7 +231,8 @@ class MSRGBConvNeXtInstanceSegmentation(nn.Module):
         mask_dim: int = 28,
         num_instances: int = 100,
         drop_path_rate: float = 0.1,
-        pretrained_backbone: Optional[str] = None
+        pretrained_backbone: Optional[str] = None,
+        freeze_backbone: bool = False,
     ):
         super(MSRGBConvNeXtInstanceSegmentation, self).__init__()
         
@@ -264,6 +265,10 @@ class MSRGBConvNeXtInstanceSegmentation(nn.Module):
         # Initialize from pretrained weights if provided
         if pretrained_backbone:
             self._load_pretrained_backbone(pretrained_backbone)
+         # Freeze backbone if specified
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
     
     def forward(self, rgb=None, ms=None):
         """
@@ -358,7 +363,8 @@ class MSRGBConvNeXtInstanceSegmentationModule(pl.LightningModule):
         learning_rate: float = 1e-4,
         weight_decay: float = 1e-4,
         class_weights: Optional[List[float]] = None,
-        pretrained_backbone: Optional[str] = None
+        pretrained_backbone: Optional[str] = None,
+        freeze_backbone: bool = False,
     ):
         super(MSRGBConvNeXtInstanceSegmentationModule, self).__init__()
         
@@ -370,8 +376,10 @@ class MSRGBConvNeXtInstanceSegmentationModule(pl.LightningModule):
             model_size=model_size,
             fusion_strategy=fusion_strategy,
             fusion_type=fusion_type,
-            pretrained_backbone=pretrained_backbone
-        )
+            pretrained_backbone=pretrained_backbone,
+            freeze_backbone=freeze_backbone
+        ),
+
         
         # Training parameters
         self.learning_rate = learning_rate
