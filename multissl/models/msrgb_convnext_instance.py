@@ -414,20 +414,84 @@ class MSRGBConvNeXtInstanceSegmentationModule(pl.LightningModule):
     def forward(self, rgb=None, ms=None):
         return self.model(rgb=rgb, ms=ms)
     
+    def _compute_box_cost_matrix(self, pred_boxes, gt_boxes):
+        """
+        Compute cost matrix between predicted and ground truth boxes using IoU
+        
+        Args:
+            pred_boxes: Predicted boxes tensor [N, 4] in format [x1, y1, x2, y2]
+            gt_boxes: Ground truth boxes tensor [M, 4] in format [x1, y1, x2, y2]
+            
+        Returns:
+            Cost matrix of shape [N, M]
+        """
+        # Ensure boxes are at least 1 pixel in size
+        pred_boxes = torch.clamp(pred_boxes, min=0)
+        gt_boxes = torch.clamp(gt_boxes, min=0)
+        
+        # Ensure width and height are positive
+        pred_boxes = pred_boxes.clone()
+        gt_boxes = gt_boxes.clone()
+        
+        # Make sure width and height are positive
+        pred_boxes[:, 2] = torch.max(pred_boxes[:, 2], pred_boxes[:, 0] + 1)
+        pred_boxes[:, 3] = torch.max(pred_boxes[:, 3], pred_boxes[:, 1] + 1)
+        gt_boxes[:, 2] = torch.max(gt_boxes[:, 2], gt_boxes[:, 0] + 1)
+        gt_boxes[:, 3] = torch.max(gt_boxes[:, 3], gt_boxes[:, 1] + 1)
+        
+        num_pred = pred_boxes.size(0)
+        num_gt = gt_boxes.size(0)
+        
+        # Create cost matrix of appropriate size
+        cost_matrix = torch.zeros((num_pred, num_gt), device=pred_boxes.device)
+        
+        # If either set of boxes is empty, return the empty cost matrix
+        if num_pred == 0 or num_gt == 0:
+            return cost_matrix
+        
+        # Calculate areas for both sets of boxes
+        pred_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
+        gt_area = (gt_boxes[:, 2] - gt_boxes[:, 0]) * (gt_boxes[:, 3] - gt_boxes[:, 1])
+        
+        # Compute IoU for each pred-gt pair
+        for p in range(num_pred):
+            # Get the predicted box
+            p_box = pred_boxes[p]
+            
+            # Calculate intersection with all ground truth boxes
+            left = torch.max(p_box[0], gt_boxes[:, 0])
+            top = torch.max(p_box[1], gt_boxes[:, 1])
+            right = torch.min(p_box[2], gt_boxes[:, 2])
+            bottom = torch.min(p_box[3], gt_boxes[:, 3])
+            
+            # Width and height of intersection
+            inter_w = torch.clamp(right - left, min=0)
+            inter_h = torch.clamp(bottom - top, min=0)
+            
+            # Area of intersection
+            intersection = inter_w * inter_h
+            
+            # Union area (using broadcasting)
+            union = pred_area[p] + gt_area - intersection
+            
+            # IoU
+            iou = intersection / (union + 1e-6)
+            
+            # Use 1-IoU as cost (lower is better)
+            cost_matrix[p] = 1 - iou
+        
+        return cost_matrix
+
     def training_step(self, batch, batch_idx):
         # Extract inputs and targets
         rgb = batch.get('rgb')
         ms = batch.get('ms')
         semantic_target = batch['mask']
         
-        # Center heatmap target and other instance data
-        center_target = batch.get('centers', torch.zeros_like(semantic_target, dtype=torch.float32))
+        # Instance segmentation targets
         instance_masks = batch.get('instance_masks', None)
         instance_classes = batch.get('instance_classes', None)
-        boxes_target = batch.get('boxes', None)
-        
-        # Get input dimensions for normalization
-        img_size = (semantic_target.shape[-2], semantic_target.shape[-1])
+        boxes = batch.get('boxes', None)
         
         # Forward pass
         outputs = self(rgb=rgb, ms=ms)
@@ -435,178 +499,75 @@ class MSRGBConvNeXtInstanceSegmentationModule(pl.LightningModule):
         # Calculate semantic segmentation loss
         semantic_loss = self.semantic_criterion(outputs['sem_logits'], semantic_target)
         
-        # Ensure center_target has a channel dimension [B, H, W] -> [B, 1, H, W]
-        if center_target.dim() == 3 and outputs['center_heatmap'].dim() == 4:
-            center_target = center_target.unsqueeze(1)
-        
-        # Calculate center point prediction loss
-        center_loss = self.center_criterion(outputs['center_heatmap'], center_target)
+        # Initialize center loss (if centers are provided)
+        center_loss = torch.tensor(0.0, device=self.device)
+        if 'centers' in batch and batch['centers'] is not None:
+            center_target = batch['centers']
+            center_loss = self.center_criterion(outputs['center_heatmap'], center_target)
         
         # Initialize instance losses
         box_loss = torch.tensor(0.0, device=self.device)
         instance_cls_loss = torch.tensor(0.0, device=self.device)
         mask_loss = torch.tensor(0.0, device=self.device)
         
-        # Process instance masks and associated targets
-        if instance_masks is not None:
-            # First detect center points from ground truth masks
-            # We'll use these to associate ground truth instances with predictions
-            batch_size = instance_masks.shape[0]
-            instance_loss_components = []
-            
+        # Calculate instance losses if we have instance targets
+        if instance_masks is not None and instance_classes is not None and boxes is not None:
+            # Process each sample in batch separately
+            batch_size = semantic_target.shape[0]
             for b in range(batch_size):
-                # Get target instances for this batch item
-                batch_instance_masks = instance_masks[b]  # [N, H, W]
-                batch_instance_boxes = boxes_target[b] if boxes_target is not None else None  # [N, 4]
-                batch_instance_classes = instance_classes[b] if instance_classes is not None else None  # [N]
+                # Get predictions for this sample
+                pred_cls_scores = outputs['cls_scores'][b]
+                pred_boxes = outputs['boxes'][b]
+                pred_mask_coeffs = outputs['mask_coeffs'][b]
+                
+                # Get ground truth for this sample
+                batch_instance_masks = instance_masks[b]
+                batch_instance_classes = instance_classes[b]
+                batch_instance_boxes = boxes[b]
                 
                 # Skip if no instances in this sample
-                if batch_instance_masks.shape[0] == 0:
+                if batch_instance_masks.shape[0] == 0 or pred_boxes.shape[0] == 0:
                     continue
                 
-                # Extract center points from ground truth masks
-                gt_centers = []
-                for i in range(batch_instance_masks.shape[0]):
-                    mask = batch_instance_masks[i]
-                    # Find center of mass
-                    y_indices, x_indices = torch.where(mask > 0.5)
-                    if len(y_indices) == 0:
-                        continue
-                        
-                    center_y = torch.mean(y_indices.float()).round().long()
-                    center_x = torch.mean(x_indices.float()).round().long()
-                    gt_centers.append((center_y, center_x, i))  # (y, x, instance_idx)
+                # Compute cost matrix for matching
+                cost_matrix = self._compute_box_cost_matrix(pred_boxes, batch_instance_boxes)
                 
-                # Skip if no valid centers found
-                if not gt_centers:
+                # Use Hungarian algorithm for matching
+                from scipy.optimize import linear_sum_assignment
+                pred_indices, gt_indices = linear_sum_assignment(cost_matrix.detach().cpu().numpy())
+                
+                # Convert to tensors
+                pred_indices = torch.tensor(pred_indices, device=self.device)
+                gt_indices = torch.tensor(gt_indices, device=self.device)
+                
+                # Skip if no matches
+                if len(pred_indices) == 0:
                     continue
                 
-                # Calculate embedding loss if we have instance embeddings
-                if 'instance_embeddings' in outputs:
-                    embeddings = outputs['instance_embeddings'][b]  # [E, H, W]
-                    embedding_loss = 0.0
-                    num_centers = len(gt_centers)
-                    
-                    if num_centers > 0:
-                        # Extract embeddings at center points
-                        center_embeddings = []
-                        for center_y, center_x, inst_idx in gt_centers:
-                            center_embedding = embeddings[:, center_y, center_x]  # [E]
-                            center_embeddings.append(center_embedding)
-                        
-                        # Calculate embedding loss (pull loss - centers of same instance should be close)
-                        if len(center_embeddings) > 1:
-                            center_embeddings = torch.stack(center_embeddings)  # [N, E]
-                            embedding_norm = F.normalize(center_embeddings, p=2, dim=1)
-                            
-                            # Calculate pairwise distances
-                            distances = torch.cdist(embedding_norm, embedding_norm, p=2)
-                            
-                            # Get instance indices
-                            instance_indices = torch.tensor([idx for _, _, idx in gt_centers], 
-                                                        device=embeddings.device)
-                            
-                            # Create mask for same/different instances
-                            same_instance = instance_indices.unsqueeze(1) == instance_indices.unsqueeze(0)
-                            
-                            # Pull loss - same instance embeddings should be close
-                            pull_loss = distances[same_instance].mean()
-                            
-                            # Push loss - different instance embeddings should be far
-                            # Using hinge loss with margin
-                            margin = 1.0
-                            push_loss = torch.clamp(margin - distances[~same_instance], min=0).mean()
-                            
-                            embedding_loss = pull_loss + push_loss
-                        
-                    instance_loss_components.append(embedding_loss)
+                # Calculate box regression loss for matched pairs
+                matched_pred_boxes = pred_boxes[pred_indices]
+                matched_gt_boxes = batch_instance_boxes[gt_indices]
+                box_loss += self.box_criterion(matched_pred_boxes, matched_gt_boxes)
                 
-                # Match predictions with ground truth for box and mask losses
-                # Method 1: Simple matching by order
-                if outputs['boxes'].shape[1] == batch_instance_masks.shape[0]:
-                    # If number of predictions matches ground truth, use direct matching
-                    pred_boxes = outputs['boxes'][b]
-                    if batch_instance_boxes is not None:
-                        # Normalize boxes to 0-1 range for loss calculation
-                        norm_pred_boxes = self.normalize_boxes(pred_boxes, img_size)
-                        norm_gt_boxes = self.normalize_boxes(batch_instance_boxes, img_size)
-                        
-                        # Box loss
-                        box_loss_batch = self.box_criterion(norm_pred_boxes, norm_gt_boxes)
-                        instance_loss_components.append(box_loss_batch)
-                    
-                    # Class loss if we have class predictions
-                    if 'cls_scores' in outputs and batch_instance_classes is not None:
-                        cls_scores = outputs['cls_scores'][b]
-                        cls_loss_batch = self.instance_cls_criterion(
-                            cls_scores, batch_instance_classes
-                        )
-                        instance_loss_components.append(cls_loss_batch)
-                    
-                    # Mask loss if we have mask predictions
-                    if 'mask_coeffs' in outputs:
-                        mask_pred = outputs['mask_coeffs'][b]
-                        
-                        # If sigmoid is needed
-                        mask_pred = torch.sigmoid(mask_pred)
-                        
-                        mask_loss_batch = self.mask_criterion(mask_pred, batch_instance_masks)
-                        instance_loss_components.append(mask_loss_batch)
+                # Calculate classification loss for matched pairs
+                matched_pred_cls = pred_cls_scores[pred_indices]
+                matched_gt_cls = batch_instance_classes[gt_indices]
+                instance_cls_loss += self.instance_cls_criterion(matched_pred_cls, matched_gt_cls)
                 
-                # Method 2: Hungarian matching (more sophisticated)
-                else:
-                    # Use more sophisticated matching when prediction count doesn't match ground truth
-                    if 'mask_coeffs' in outputs:
-                        mask_loss_batch = self.calculate_mask_loss_with_matching(
-                            outputs['mask_coeffs'][b:b+1],
-                            batch_instance_masks.unsqueeze(0)
-                        )
-                        instance_loss_components.append(mask_loss_batch)
-                    
-                    # For box loss with Hungarian matching
-                    if 'boxes' in outputs and batch_instance_boxes is not None:
-                        pred_boxes = outputs['boxes'][b]
-                        
-                        # Compute IoU cost matrix
-                        cost_matrix = self._compute_box_cost_matrix(pred_boxes, batch_instance_boxes)
-                        
-                        # Use Hungarian algorithm for matching
-                        pred_indices, gt_indices = linear_sum_assignment(cost_matrix.cpu().numpy())
-                        
-                        # Match boxes
-                        matched_pred_boxes = pred_boxes[pred_indices]
-                        matched_gt_boxes = batch_instance_boxes[gt_indices]
-                        
-                        # Normalize
-                        norm_pred_boxes = self.normalize_boxes(matched_pred_boxes, img_size)
-                        norm_gt_boxes = self.normalize_boxes(matched_gt_boxes, img_size)
-                        
-                        # Compute loss
-                        box_loss_batch = self.box_criterion(norm_pred_boxes, norm_gt_boxes)
-                        instance_loss_components.append(box_loss_batch)
-                        
-                        # Also match classes if available
-                        if 'cls_scores' in outputs and batch_instance_classes is not None:
-                            cls_scores = outputs['cls_scores'][b][pred_indices]
-                            matched_classes = batch_instance_classes[gt_indices]
-                            
-                            cls_loss_batch = self.instance_cls_criterion(
-                                cls_scores, matched_classes
-                            )
-                            instance_loss_components.append(cls_loss_batch)
-            
-            # Combine all instance loss components
-            if instance_loss_components:
-                instance_loss = torch.stack(instance_loss_components).mean()
-                
-                # Assign to individual loss components for logging
-                # This is arbitrary - we could split differently
-                mask_loss = instance_loss * 0.4
-                box_loss = instance_loss * 0.3
-                instance_cls_loss = instance_loss * 0.3
+                # Calculate mask loss if applicable
+                if hasattr(self, 'mask_criterion') and pred_mask_coeffs is not None:
+                    # This would need to be implemented based on your specific mask representation
+                    pass
         
-        # Combine all losses
-        total_loss = semantic_loss + center_loss + box_loss + instance_cls_loss + mask_loss
+        # Normalize instance losses by batch size
+        batch_size = semantic_target.shape[0]
+        if batch_size > 0:
+            box_loss = box_loss / batch_size
+            instance_cls_loss = instance_cls_loss / batch_size
+            mask_loss = mask_loss / batch_size
+        
+        # Combine all losses with appropriate weights
+        total_loss = semantic_loss + 0.1 * center_loss + 0.1 * box_loss + 0.1 * instance_cls_loss + 0.1 * mask_loss
         
         # Log components
         self.log('train_semantic_loss', semantic_loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -641,60 +602,6 @@ class MSRGBConvNeXtInstanceSegmentationModule(pl.LightningModule):
         normalized[:, 3] /= height  # y2
         
         return normalized
-
-    def _compute_box_cost_matrix(self, pred_boxes, gt_boxes):
-        """
-        Compute cost matrix for box matching using IoU.
-        
-        Args:
-            pred_boxes: Predicted boxes [M, 4]
-            gt_boxes: Ground truth boxes [N, 4]
-            
-        Returns:
-            Cost matrix [M, N]
-        """
-        M = pred_boxes.shape[0]
-        N = gt_boxes.shape[0]
-        
-        # Extract coordinates
-        pred_x1 = pred_boxes[:, 0].view(M, 1)
-        pred_y1 = pred_boxes[:, 1].view(M, 1)
-        pred_x2 = pred_boxes[:, 2].view(M, 1)
-        pred_y2 = pred_boxes[:, 3].view(M, 1)
-        
-        gt_x1 = gt_boxes[:, 0].view(1, N)
-        gt_y1 = gt_boxes[:, 1].view(1, N)
-        gt_x2 = gt_boxes[:, 2].view(1, N)
-        gt_y2 = gt_boxes[:, 3].view(1, N)
-        
-        # Calculate areas
-        pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
-        gt_area = (gt_x2 - gt_x1) * (gt_y2 - gt_y1)
-        
-        # Compute IoU
-        # First, compute intersection
-        inter_x1 = torch.max(pred_x1, gt_x1)
-        inter_y1 = torch.max(pred_y1, gt_y1)
-        inter_x2 = torch.min(pred_x2, gt_x2)
-        inter_y2 = torch.min(pred_y2, gt_y2)
-        
-        # Clip to ensure valid dimensions
-        inter_w = (inter_x2 - inter_x1).clamp(min=0)
-        inter_h = (inter_y2 - inter_y1).clamp(min=0)
-        
-        # Intersection area
-        intersection = inter_w * inter_h
-        
-        # Union area
-        union = pred_area + gt_area.t() - intersection
-        
-        # IoU
-        iou = intersection / (union + 1e-6)
-        
-        # Cost matrix is 1 - IoU
-        cost_matrix = 1.0 - iou
-        
-        return cost_matrix
         
     def validation_step(self, batch, batch_idx):
         # Similar to training_step but with evaluation metrics
@@ -879,166 +786,212 @@ class MSRGBConvNeXtInstanceSegmentationModule(pl.LightningModule):
         
         return loss.mean()
     
-    def predict_instances(self, outputs, confidence_threshold=0.5, nms_threshold=0.3, max_instances=20):
+    def predict_instances(self, outputs, confidence_threshold=0.5, nms_threshold=0.5, max_instances=100):
         """
-        Convert model outputs to actual instance segmentation results.
+        Extract instance predictions from model outputs
         
         Args:
             outputs: Dictionary of model outputs
-            confidence_threshold: Threshold for center detection confidence
-            nms_threshold: Threshold for non-maximum suppression
+            confidence_threshold: Minimum confidence score for instances
+            nms_threshold: IoU threshold for non-maximum suppression
             max_instances: Maximum number of instances to return
             
         Returns:
-            Dictionary with processed instance segmentation results
+            Dictionary with instance predictions
         """
-        batch_size = outputs['sem_logits'].shape[0]
-        height, width = outputs['sem_logits'].shape[2], outputs['sem_logits'].shape[3]
+        # Extract relevant outputs
+        center_heatmap = outputs['center_heatmap']  # [B, 1, H, W]
+        mask_coeffs = outputs['mask_coeffs']  # [B, mask_dim*num_classes, H, W]
+        cls_scores = outputs['cls_scores']  # [B, N, num_classes]
+        boxes = outputs['boxes']  # [B, N, 4]
         
-        # Get semantic segmentation class prediction
-        semantic_pred = torch.argmax(outputs['sem_logits'], dim=1)  # [B, H, W]
+        batch_size = center_heatmap.shape[0]
         
-        # Process results for each image in the batch
-        instance_results = []
+        # Process each sample in the batch
+        all_instance_masks = []
+        all_center_scores = []
+        all_instance_boxes = []
+        all_instance_classes = []
         
         for b in range(batch_size):
-            # 1. Find center points from heatmap
-            center_heatmap = outputs['center_heatmap'][b, 0]  # [H, W]
+            # Extract peak points from center heatmap (these are instance centers)
+            centers_b = center_heatmap[b, 0]  # [H, W]
             
-            # Apply non-maximum suppression to find center points
-            # This is a simple version - you can use more sophisticated methods
-            centers = self._find_center_points(
-                center_heatmap, 
-                threshold=confidence_threshold,
-                nms_kernel_size=7,
-                max_centers=max_instances
-            )
+            # Apply threshold to center heatmap
+            centers_binary = (centers_b > confidence_threshold).float()
             
-            # Skip if no centers found
-            if len(centers) == 0:
-                instance_results.append({
-                    'masks': torch.zeros((0, height, width), device=outputs['sem_logits'].device),
-                    'boxes': torch.zeros((0, 4), device=outputs['sem_logits'].device),
-                    'scores': torch.zeros(0, device=outputs['sem_logits'].device),
-                    'classes': torch.zeros(0, dtype=torch.long, device=outputs['sem_logits'].device)
-                })
-                continue
+            # Find connected components in thresholded heatmap
+            from skimage.measure import label as skimage_label
+            import numpy as np
             
-            # 2. For each center point, get embeddings around it
+            # Convert to numpy for connected component analysis
+            centers_np = centers_binary.cpu().numpy()
+            instance_labels = skimage_label(centers_np)
+            
+            # Get instance centers (one per connected component)
+            instance_ids = np.unique(instance_labels)
+            
+            # Remove background (0)
+            instance_ids = instance_ids[instance_ids != 0]
+            
+            # Limit number of instances
+            if len(instance_ids) > max_instances:
+                instance_ids = instance_ids[:max_instances]
+                
+            # Process each detected instance
             instance_masks = []
             center_scores = []
             instance_boxes = []
             instance_classes = []
             
-            # Process mask coefficients based on your model architecture
-            # Option 1: If mask_coeffs are directly instance masks
-            if outputs['mask_coeffs'].shape[1] == outputs['boxes'].shape[1]:
-                # Mask coeffs represent actual masks
-                instance_masks = outputs['mask_coeffs'][b]  # [N, H, W]
+            for instance_id in instance_ids:
+                # Get instance mask from connected component
+                instance_mask = (instance_labels == instance_id)
                 
-                # Apply sigmoid if needed (depends on if BCEWithLogitsLoss or BCE was used)
-                instance_masks = torch.sigmoid(instance_masks)
+                # Find center coordinates
+                ys, xs = np.where(instance_mask)
+                if len(ys) == 0:
+                    continue
+                    
+                cy = np.mean(ys)
+                cx = np.mean(xs)
                 
-                # Get boxes and scores from model output
-                instance_boxes = outputs['boxes'][b]  # [N, 4]
-                cls_scores = outputs['cls_scores'][b]  # [N, C]
+                # Convert to integer coordinates
+                cy_int = int(np.round(cy))
+                cx_int = int(np.round(cx))
                 
-                # Get class predictions and confidence scores
-                instance_classes = torch.argmax(cls_scores, dim=1)
-                scores = torch.max(cls_scores, dim=1)[0]
+                # Get confidence score at center
+                center_score = centers_b[cy_int, cx_int].item()  # This is a float, not a tensor
                 
-            # Option 2: If mask_coeffs need to be decoded with embeddings
-            else:
-                # This branch handles the case where mask_coeffs are coefficients 
-                # that need to be combined with instance embeddings at center points
-                embeddings = outputs['instance_embeddings'][b]  # [E, H, W]
+                # Skip low confidence instances
+                if center_score < confidence_threshold:
+                    continue
+                    
+                # Find nearest predicted box
+                # This assumes boxes are ordered by confidence
+                box_dists = []
+                for i in range(len(boxes[b])):
+                    box = boxes[b][i]
+                    # Calculate center of box
+                    box_cx = (box[0] + box[2]) / 2
+                    box_cy = (box[1] + box[3]) / 2
+                    
+                    # Calculate distance to center
+                    dist = torch.sqrt((box_cx - cx_int) ** 2 + (box_cy - cy_int) ** 2)
+                    box_dists.append((i, dist.item()))
                 
-                for i, (y, x, score) in enumerate(centers):
-                    # Get embedding at center point
-                    center_embedding = embeddings[:, y, x]  # [E]
+                # Sort by distance
+                box_dists.sort(key=lambda x: x[1])
+                
+                # Get nearest box and its class
+                if box_dists:
+                    nearest_box_idx = box_dists[0][0]
+                    box = boxes[b][nearest_box_idx]
+                    cls_score = cls_scores[b][nearest_box_idx]
+                    cls_id = torch.argmax(cls_score).item()
                     
-                    # Use similarity between center embedding and all embeddings to create mask
-                    similarity = self._compute_embedding_similarity(center_embedding, embeddings)
+                    # Convert instance mask to tensor
+                    mask_tensor = torch.from_numpy(instance_mask).float().to(box.device)
                     
-                    # Threshold similarity to get instance mask
-                    mask = (similarity > 0.5).float()
-                    
-                    # Apply post-processing to clean up mask
-                    mask = self._refine_mask(mask, semantic_pred[b])
-                    
-                    # Calculate bounding box from mask
-                    box = self._mask_to_box(mask)
-                    
-                    # Determine class from semantic mask in this region
-                    mask_area = mask.sum()
-                    if mask_area > 0:
-                        # Get most common class in the masked region
-                        masked_semantic = semantic_pred[b] * mask
-                        unique_classes, counts = torch.unique(masked_semantic, return_counts=True)
-                        if len(counts) > 0:
-                            # Remove background class (0)
-                            if 0 in unique_classes:
-                                zero_idx = (unique_classes == 0).nonzero().item()
-                                unique_classes = torch.cat([unique_classes[:zero_idx], unique_classes[zero_idx+1:]])
-                                counts = torch.cat([counts[:zero_idx], counts[zero_idx+1:]])
-                            
-                            if len(counts) > 0:
-                                # Get class with highest count
-                                instance_class = unique_classes[counts.argmax()]
-                            else:
-                                # Default to background
-                                instance_class = torch.tensor(0, device=unique_classes.device)
-                        else:
-                            # Default to background
-                            instance_class = torch.tensor(0, device=semantic_pred.device)
-                    else:
-                        # Empty mask - default to background
-                        instance_class = torch.tensor(0, device=semantic_pred.device)
-                    
-                    # Store results
-                    instance_masks.append(mask)
-                    center_scores.append(score)
+                    # Add to predictions
+                    instance_masks.append(mask_tensor)
+                    center_scores.append(center_score)  # This is a float, not a tensor
                     instance_boxes.append(box)
-                    instance_classes.append(instance_class)
-                
-                # Stack results if we have any
-                if instance_masks:
-                    instance_masks = torch.stack(instance_masks)
-                    center_scores = torch.stack(center_scores)
-                    instance_boxes = torch.stack(instance_boxes)
-                    instance_classes = torch.stack(instance_classes)
-                else:
-                    # Empty results
-                    instance_masks = torch.zeros((0, height, width), device=outputs['sem_logits'].device)
-                    center_scores = torch.zeros(0, device=outputs['sem_logits'].device)
-                    instance_boxes = torch.zeros((0, 4), device=outputs['sem_logits'].device)
-                    instance_classes = torch.zeros(0, dtype=torch.long, device=outputs['sem_logits'].device)
+                    instance_classes.append(cls_id)
             
-            # 3. Apply NMS to remove overlapping instances
-            if len(instance_masks) > 0:
-                keep_indices = self._non_maximum_suppression(
-                    instance_boxes, center_scores, nms_threshold
-                )
+            # Convert to tensors carefully
+            if instance_masks:
+                instance_masks = torch.stack(instance_masks)
+                # Convert center_scores from floats to tensor
+                center_scores = torch.tensor(center_scores, device=instance_masks.device)
+                instance_boxes = torch.stack(instance_boxes)
+                instance_classes = torch.tensor(instance_classes, device=instance_masks.device)
+                
+                # Apply non-maximum suppression
+                keep_indices = self._nms(instance_boxes, center_scores, nms_threshold)
                 
                 instance_masks = instance_masks[keep_indices]
+                center_scores = center_scores[keep_indices]
                 instance_boxes = instance_boxes[keep_indices]
-                instance_scores = center_scores[keep_indices]
                 instance_classes = instance_classes[keep_indices]
             else:
-                instance_masks = torch.zeros((0, height, width), device=outputs['sem_logits'].device)
-                instance_boxes = torch.zeros((0, 4), device=outputs['sem_logits'].device)
-                instance_scores = torch.zeros(0, device=outputs['sem_logits'].device)
-                instance_classes = torch.zeros(0, dtype=torch.long, device=outputs['sem_logits'].device)
+                # Create empty tensors with the right shape
+                h, w = center_heatmap.shape[2:]
+                instance_masks = torch.zeros((0, h, w), device=center_heatmap.device)
+                center_scores = torch.zeros(0, device=center_heatmap.device)
+                instance_boxes = torch.zeros((0, 4), device=center_heatmap.device)
+                instance_classes = torch.zeros(0, dtype=torch.long, device=center_heatmap.device)
             
-            # Store results for this image
-            instance_results.append({
-                'masks': instance_masks,
-                'boxes': instance_boxes,
-                'scores': instance_scores,
-                'classes': instance_classes
-            })
+            all_instance_masks.append(instance_masks)
+            all_center_scores.append(center_scores)
+            all_instance_boxes.append(instance_boxes)
+            all_instance_classes.append(instance_classes)
         
-        return instance_results
+        return {
+            'instance_masks': all_instance_masks,
+            'center_scores': all_center_scores,
+            'instance_boxes': all_instance_boxes,
+            'instance_classes': all_instance_classes
+        }
+
+    def _nms(self, boxes, scores, iou_threshold):
+        """
+        Non-maximum suppression to remove overlapping boxes
+        
+        Args:
+            boxes: Bounding boxes [N, 4]
+            scores: Confidence scores [N]
+            iou_threshold: IoU threshold for suppression
+            
+        Returns:
+            Indices of kept boxes
+        """
+        # If no boxes, return empty tensor
+        if boxes.shape[0] == 0:
+            return torch.zeros(0, dtype=torch.long, device=boxes.device)
+        
+        # Convert to (x1, y1, x2, y2) format if necessary
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+        
+        # Calculate areas
+        areas = (x2 - x1) * (y2 - y1)
+        
+        # Sort boxes by score
+        order = torch.argsort(scores, descending=True)
+        
+        keep = []
+        while order.shape[0] > 0:
+            # Pick the box with highest score
+            i = order[0].item()
+            keep.append(i)
+            
+            # If only one box left, break
+            if order.shape[0] == 1:
+                break
+            
+            # Calculate IoU with remaining boxes
+            xx1 = torch.max(x1[i], x1[order[1:]])
+            yy1 = torch.max(y1[i], y1[order[1:]])
+            xx2 = torch.min(x2[i], x2[order[1:]])
+            yy2 = torch.min(y2[i], y2[order[1:]])
+            
+            # Calculate intersection area
+            w = torch.clamp(xx2 - xx1, min=0)
+            h = torch.clamp(yy2 - yy1, min=0)
+            intersection = w * h
+            
+            # Calculate IoU
+            union = areas[i] + areas[order[1:]] - intersection
+            iou = intersection / (union + 1e-6)
+            
+            # Keep boxes with IoU below threshold
+            inds = torch.where(iou <= iou_threshold)[0]
+            order = order[inds + 1]  # +1 because we skipped the first element
+        
+        return torch.tensor(keep, dtype=torch.long, device=boxes.device)
 
     def _find_center_points(self, heatmap, threshold=0.5, nms_kernel_size=7, max_centers=100):
         """
