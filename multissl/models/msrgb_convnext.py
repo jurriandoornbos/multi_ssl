@@ -328,7 +328,7 @@ class MSRGBConvNeXt(nn.Module):
             early_fusion=(fusion_strategy == 'early')
         )
         
-        # Configure fusion for stages based on strategy
+        # Configure fusion for stages based on strategy 
         stage_fusion = [False, False, False, False]
         
         if fusion_strategy == 'early':

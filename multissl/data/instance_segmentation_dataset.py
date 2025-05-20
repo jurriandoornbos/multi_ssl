@@ -1,25 +1,25 @@
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Union
 import random
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 from pycocotools.coco import COCO
+from PIL import Image
 
 class COCOInstanceSegmentationDataset(Dataset):
     """
     Dataset for loading a COCO image with its segmentation mask
+    Adapted to return bboxes in YOLO-style format (list of tensors) with xyxy coordinates
     """
-    def __init__(self, img_dir, coco_json_path, instance_dir, transform=None):
+    def __init__(self, img_dir, coco_json_path, instance_dir, transform=None,device=None):
         """
         Args:
             coco_json_path: Path to COCO JSON annotations file
             img_dir: Directory with the images
+            instance_dir: Directory with instance mask images
             transform: Optional transform for the image
-            target_transform: Optional transform for the mask
         """
         self.coco = COCO(coco_json_path)
         self.instance_dir = instance_dir
@@ -40,19 +40,24 @@ class COCOInstanceSegmentationDataset(Dataset):
         self.categories = self.coco.loadCats(self.coco.getCatIds())
         self.category_names = {cat['id']: cat['name'] for cat in self.categories}
         self.num_classes = len(self.categories) + 1  # +1 for background
+        if device == None:
+            self.device = 'cpu'
+        else:
+            self.device = device
+
         
     def __len__(self):
         return len(self.img_ids)
     
     def __getitem__(self, idx):
         """
-        Get image and mask for a given index
+        Get image and data for a given index
         
         Args:
             idx: Index to retrieve
                 
         Returns:
-            dict: Contains RGB image and instance segmentation data
+            dict: Contains RGB image and bounding box data in YOLO-style format
         """
         img_id = self.img_ids[idx]
         
@@ -64,6 +69,7 @@ class COCOInstanceSegmentationDataset(Dataset):
         image = Image.open(image_path).convert("RGB")
         image = np.array(image)  # Convert to numpy for our transforms
 
+        # Load instance mask if available
         if idx < len(self.instance_ids):
             instance_id = self.instance_ids[idx]
             instance_path = os.path.join(self.instance_dir, instance_id)
@@ -74,12 +80,12 @@ class COCOInstanceSegmentationDataset(Dataset):
             instance = np.zeros((img_info['height'], img_info['width']), dtype=np.uint8)
         
         # Create segmentation mask
-        mask = self.create_mask(img_id, img_info['height'], img_info['width'])
+        semantic_mask = self.create_mask(img_id, img_info['height'], img_info['width'])
         
         # Create initial sample dictionary
         sample = {
             'rgb': image,
-            'mask': mask,
+            'mask': semantic_mask,
             'instance': instance,
             'img_id': img_id
         }
@@ -88,8 +94,8 @@ class COCOInstanceSegmentationDataset(Dataset):
         if self.transform:
             sample = self.transform(sample)
         
-        # After transforms, prepare instance data
-        instance_data = self._prepare_instance_tensors(
+        # After transforms, prepare instance data and bboxes
+        instance_data = self._prepare_instance_tensors_with_boxes(
             semantic_tensor=sample['mask'] if isinstance(sample['mask'], torch.Tensor) 
                         else torch.from_numpy(sample['mask']).long(),
             instance_tensor=sample['instance'] if isinstance(sample['instance'], torch.Tensor)
@@ -98,8 +104,15 @@ class COCOInstanceSegmentationDataset(Dataset):
         )
         sample.update(instance_data)
         
-        return sample
-
+        # Extract just the information we need for YOLO-style training
+        return {
+            'rgb': sample['rgb'],
+            'boxes': instance_data['boxes_yolo_style'],  # List containing single tensor of boxes c,xywh, normalized
+            'instance_masks': instance_data['instance_masks'],
+            'instance_classes':  instance_data['instance_classes'],
+            'mask': instance_data["mask"],
+            'img_id': img_id
+        }
     
     def create_mask(self, img_id, height, width):
         """
@@ -132,416 +145,7 @@ class COCOInstanceSegmentationDataset(Dataset):
             mask[binary_mask == 1] = ann['category_id']
         
         return mask
-
-    from matplotlib.colors import ListedColormap
     
-    def visualize_instance_segmentation(self,
-        image: Optional[torch.Tensor] = None,
-        semantic_mask: Optional[torch.Tensor] = None,
-        instance_masks: Optional[torch.Tensor] = None,
-        class_ids: Optional[torch.Tensor] = None,
-        boxes: Optional[torch.Tensor] = None,
-        class_names: Optional[List[str]] = None,
-        batch: Optional[Dict]= None,
-        alpha: float = 0.9,
-        figsize: Tuple[int, int] = (16, 12),
-        random_colors: bool = True,
-        save_path: Optional[str] = None,
-        show_boxes: bool = True,
-        show_class_labels: bool = True,
-        max_instances_to_show: int = 20
-    ):
-        """
-        Visualize instance segmentation results
-        
-        Args:
-            image: Original image tensor [C, H, W] or [H, W, C]
-            semantic_mask: Semantic segmentation mask [H, W] or one-hot encoded [C, H, W]
-            instance_masks: Instance masks [N, H, W] where N is number of instances
-            class_ids: Class IDs for each instance [N]
-            boxes: Bounding boxes for instances [N, 4] in format [x1, y1, x2, y2]
-            class_names: List of class names for labeling
-            alpha: Transparency for masks
-            figsize: Figure size for the plot
-            random_colors: Whether to use random colors for instances or a fixed colormap
-            save_path: Path to save the visualization, if provided
-            show_boxes: Whether to show bounding boxes
-            show_class_labels: Whether to show class labels
-            max_instances_to_show: Maximum number of instances to visualize
-        
-        Returns:
-            Matplotlib figure
-        """
-        # Create figure and determine the subplot layout
-        if batch:
-            image = batch['rgb']
-            semantic_mask = batch["mask"]
-            instance_masks = batch["instance_masks"]
-            boxes = batch["boxes"]
-        num_rows = 0
-        if image is not None:
-            num_rows += 1
-        if semantic_mask is not None:
-            num_rows += 1
-        if instance_masks is not None:
-            num_rows += 1
-        
-        if num_rows == 0:
-            raise ValueError("At least one of image, semantic_mask, or instance_masks must be provided")
-        
-        fig, axs = plt.subplots(num_rows, 1, figsize=figsize)
-        
-        # Convert to single axis if only one row
-        if num_rows == 1:
-            axs = [axs]
-        
-        current_row = 0
-        
-        # Process and display the original image
-        if image is not None:
-            ax_img = axs[current_row]
-            current_row += 1
-            
-            # Convert torch tensor to numpy and ensure correct shape
-            if isinstance(image, torch.Tensor):
-                image_np = image.cpu().detach().numpy()
-                
-                # Check if channels are first dimension
-                if image_np.shape[0] == 3 or image_np.shape[0] == 4:  # [C, H, W]
-                    image_np = np.transpose(image_np, (1, 2, 0))
-                
-                # Handle 4 channels (RGBA or RGBD)
-                if image_np.shape[2] == 4:
-                    image_np = image_np[:, :, :3]  # Take RGB channels
-            else:
-                image_np = image
-                
-            # Normalize if needed
-            if image_np.max() > 1.0:
-                image_np = image_np / 255.0
-                
-            # Display the image
-            ax_img.imshow(image_np)
-            ax_img.set_title("Original Image")
-            ax_img.axis('off')
-        
-        # Process and display the semantic segmentation mask
-        if semantic_mask is not None:
-            ax_sem = axs[current_row]
-            current_row += 1
-            
-            # Convert torch tensor to numpy
-            if isinstance(semantic_mask, torch.Tensor):
-                semantic_mask_np = semantic_mask.cpu().detach().numpy()
-            else:
-                semantic_mask_np = semantic_mask
-                
-            # Check if semantic mask is one-hot encoded
-            if semantic_mask_np.ndim == 3:
-                if semantic_mask_np.shape[0] > 1:  # [C, H, W] format
-                    semantic_mask_np = np.argmax(semantic_mask_np, axis=0)
-                else:  # Single channel
-                    semantic_mask_np = semantic_mask_np[0]
-            
-            # Create a colormap for semantic segmentation
-            num_classes = int(np.max(semantic_mask_np)) + 1
-            colors = plt.cm.get_cmap('tab20', num_classes)
-            
-            # Display semantic segmentation
-            sem_img = ax_sem.imshow(semantic_mask_np, cmap=colors, vmin=0, vmax=num_classes-1)
-            ax_sem.set_title("Semantic Segmentation")
-            ax_sem.axis('off')
-            
-            # Add colorbar with class names if provided
-            if class_names is not None:
-                cbar = plt.colorbar(sem_img, ax=ax_sem, ticks=np.arange(num_classes))
-                if len(class_names) >= num_classes:
-                    cbar.ax.set_yticklabels(class_names[:num_classes])
-        
-        # Process and display instance masks
-        if instance_masks is not None:
-            ax_inst = axs[current_row]
-            
-            # Convert torch tensor to numpy
-            if isinstance(instance_masks, torch.Tensor):
-                instance_masks_np = instance_masks.cpu().detach().numpy()
-            else:
-                instance_masks_np = instance_masks
-                
-            # Convert class IDs to numpy if provided
-            class_ids_np = None
-            if class_ids is not None and isinstance(class_ids, torch.Tensor):
-                class_ids_np = class_ids.cpu().detach().numpy()
-            else:
-                class_ids_np = class_ids
-                
-            # Convert boxes to numpy if provided
-            boxes_np = None
-            if boxes is not None and isinstance(boxes, torch.Tensor):
-                boxes_np = boxes.cpu().detach().numpy()
-            else:
-                boxes_np = boxes
-            
-            # Limit number of instances to visualize
-            num_instances = min(instance_masks_np.shape[0], max_instances_to_show)
-            
-            # Set up the plot for instances
-            if image is not None:
-                # Show instances overlaid on original image
-                ax_inst.imshow(image_np)
-            else:
-                # Create a blank canvas for instances
-                blank = np.zeros(instance_masks_np.shape[1:] + (3,), dtype=np.float32)
-                ax_inst.imshow(blank)
-            
-            ax_inst.set_title(f"Instance Segmentation (showing {num_instances} of {instance_masks_np.shape[0]} instances)")
-            ax_inst.axis('off')
-            
-            # Generate random colors for instances
-            if random_colors:
-                # Generate distinct colors for better visualization
-                colors = []
-                for i in range(num_instances):
-                    # Generate vibrant colors
-                    h = random.random()  # Hue
-                    s = 0.8 + random.random() * 0.2  # Saturation
-                    v = 0.8 + random.random() * 0.2  # Value
-                    
-                    # Convert HSV to RGB
-                    r, g, b = self._hsv_to_rgb(h, s, v)
-                    colors.append([r, g, b])
-            else:
-                # Use a fixed colormap
-                cmap = plt.cm.get_cmap('tab20', num_instances)
-                colors = [cmap(i)[:3] for i in range(num_instances)]
-            
-            # Overlay instance masks
-            for i in range(num_instances):
-                # Get mask and create rgba mask for overlay
-                mask = instance_masks_np[i]
-                color_mask = np.zeros(mask.shape + (4,), dtype=np.float32)
-                
-                # Fill the mask with the instance color and set alpha
-                color_mask[mask > 0.5, :3] = colors[i]
-                color_mask[mask > 0.5, 3] = alpha
-                
-                # Overlay on the plot
-                ax_inst.imshow(color_mask, alpha=alpha)
-                
-        plt.tight_layout()
-        
-        # Save the figure if path is provided
-        if save_path:
-            plt.savefig(save_path, bbox_inches='tight', dpi=300)
-        
-        return fig
-    
-    def visualize_onehot_instances(self,
-        image: Optional[torch.Tensor] = None,
-        onehot_instances: torch.Tensor = None,
-        class_ids: Optional[torch.Tensor] = None,
-        class_names: Optional[List[str]] = None,
-        figsize: Tuple[int, int] = (16, 12),
-        alpha: float = 0.7,
-        save_path: Optional[str] = None
-    ):
-        """
-        Visualize one-hot encoded instance masks
-        
-        Args:
-            image: Original image tensor [C, H, W] or [H, W, C]
-            onehot_instances: One-hot encoded instance masks [N, H, W]
-            class_ids: Class IDs for each instance [N]
-            class_names: List of class names for labeling
-            figsize: Figure size for the plot
-            alpha: Transparency for instance overlays
-            save_path: Path to save the visualization
-            
-        Returns:
-            Matplotlib figure
-        """
-        # Extract the shape of the one-hot encoded instances
-        if onehot_instances is None:
-            raise ValueError("onehot_instances must be provided")
-        
-        num_instances, h, w = onehot_instances.shape
-        
-        # Create the figure
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
-        
-        # Display the original image if provided, otherwise create a blank canvas
-        if image is not None:
-            # Convert torch tensor to numpy and ensure correct shape
-            if isinstance(image, torch.Tensor):
-                image_np = image.cpu().detach().numpy()
-                
-                # Check if channels are first dimension
-                if image_np.shape[0] == 3 or image_np.shape[0] == 4:  # [C, H, W]
-                    image_np = np.transpose(image_np, (1, 2, 0))
-                
-                # Handle 4 channels (RGBA or RGBD)
-                if image_np.shape[2] == 4:
-                    image_np = image_np[:, :, :3]  # Take RGB channels
-            else:
-                image_np = image
-                
-            # Normalize if needed
-            if image_np.max() > 1.0:
-                image_np = image_np / 255.0
-                
-            # Display the image
-            ax.imshow(image_np)
-        else:
-            # Create a blank canvas
-            blank = np.zeros((h, w, 3), dtype=np.float32)
-            ax.imshow(blank)
-        
-        # Convert onehot instances to numpy
-        instances_np = onehot_instances.cpu().detach().numpy()
-        
-        # Convert class IDs to numpy if provided
-        class_ids_np = None
-        if class_ids is not None:
-            if isinstance(class_ids, torch.Tensor):
-                class_ids_np = class_ids.cpu().detach().numpy()
-            else:
-                class_ids_np = class_ids
-        
-        # Generate a colormap for instances
-        cmap = plt.cm.get_cmap('tab20', num_instances)
-        
-        # Create legend elements
-        legend_elements = []
-        
-        # Display each instance with a unique color
-        for i in range(num_instances):
-            # Get instance mask and choose a color
-            mask = instances_np[i]
-            color = cmap(i)[:3]
-            
-            # Create RGBA overlay
-            mask_color = np.zeros((h, w, 4), dtype=np.float32)
-            mask_color[mask > 0.5, :3] = color
-            mask_color[mask > 0.5, 3] = alpha
-            
-            # Overlay instance
-            ax.imshow(mask_color)
-            
-            # Determine class label if available
-            label = f"Instance {i+1}"
-            if class_ids_np is not None and i < len(class_ids_np):
-                class_id = int(class_ids_np[i])
-                class_label = str(class_id)
-                
-                if class_names is not None and class_id < len(class_names):
-                    class_label = class_names[class_id]
-                    
-                label = f"Instance {i+1} ({class_label})"
-            
-            # Add to legend
-            legend_elements.append(plt.Line2D([0], [0], marker='s', color='w', 
-                                             markerfacecolor=color, markersize=10, label=label))
-            
-            # Find the center of mass for the instance
-            y_indices, x_indices = np.where(mask > 0.5)
-            if len(y_indices) > 0:
-                y_center = int(np.mean(y_indices))
-                x_center = int(np.mean(x_indices))
-                
-                # Add instance number at the center
-                ax.text(x_center, y_center, str(i+1), color='white', fontsize=10, 
-                        ha='center', va='center', weight='bold',
-                        bbox=dict(boxstyle="circle,pad=0.3", fc=color, ec='black', alpha=0.8))
-        
-        # Add legend outside the image
-        ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
-        
-        # Set title and turn off axis
-        ax.set_title(f"Instance Segmentation ({num_instances} instances)")
-        ax.axis('off')
-        
-        plt.tight_layout()
-        
-        # Save the figure if path is provided
-        if save_path:
-            plt.savefig(save_path, bbox_inches='tight', dpi=300)
-        
-        return fig
-        
-    def _create_center_heatmap_tensor(self, instance_masks, sigma=2.0):
-        """
-        Create a center point heatmap from instance mask tensors
-        
-        Args:
-            instance_masks: Tensor of shape [num_instances, H, W] with binary masks
-            sigma: Standard deviation for Gaussian peaks
-            
-        Returns:
-            Center heatmap tensor [H, W]
-        """
-        if instance_masks.shape[0] == 0:
-            return torch.zeros((instance_masks.shape[1], instance_masks.shape[2]), 
-                            device=instance_masks.device)
-        
-        num_instances, h, w = instance_masks.shape
-        heatmap = torch.zeros((h, w), device=instance_masks.device)
-        
-        for mask in instance_masks:
-            # Find center of mass of the instance
-            y_indices, x_indices = torch.where(mask > 0.5)
-            if len(y_indices) == 0:
-                continue
-                
-            center_y = torch.mean(y_indices.float()).round().long()
-            center_x = torch.mean(x_indices.float()).round().long()
-            
-            # Create meshgrid for distance calculation
-            y = torch.arange(h, device=instance_masks.device)
-            x = torch.arange(w, device=instance_masks.device)
-            y_grid, x_grid = torch.meshgrid(y, x, indexing='ij')
-            
-            # Calculate squared distance
-            dist_sq = (y_grid - center_y) ** 2 + (x_grid - center_x) ** 2
-            
-            # Create Gaussian
-            gaussian = torch.exp(-dist_sq / (2 * sigma ** 2))
-            
-            # Add to heatmap (maximum)
-            heatmap = torch.maximum(heatmap, gaussian)
-        
-        return heatmap
-
-    def _create_boxes_from_masks_tensor(self, instance_masks):
-        """
-        Create bounding boxes from instance mask tensors
-        
-        Args:
-            instance_masks: Tensor of shape [num_instances, H, W] with binary masks
-            
-        Returns:
-            Tensor of boxes with shape [num_instances, 4] in format [x1, y1, x2, y2]
-        """
-        num_instances = instance_masks.shape[0]
-        boxes = torch.zeros((num_instances, 4), device=instance_masks.device)
-        
-        for i, mask in enumerate(instance_masks):
-            # Find non-zero indices
-            y_indices, x_indices = torch.where(mask > 0.5)
-            if len(y_indices) == 0:
-                # Empty mask, add a dummy box
-                boxes[i] = torch.tensor([0, 0, 1, 1], device=instance_masks.device)
-                continue
-                
-            # Get bounding box coordinates
-            y1, y2 = torch.min(y_indices), torch.max(y_indices)
-            x1, x2 = torch.min(x_indices), torch.max(x_indices)
-            
-            # Add box in [x1, y1, x2, y2] format
-            boxes[i] = torch.tensor([x1, y1, x2, y2], device=instance_masks.device)
-        
-        return boxes
-        
-        
     def _instance_id_tensor_to_binary_masks(self, instance_tensor, ignore_zero=True):
         """
         Convert an instance ID tensor to separate binary masks for each instance
@@ -553,12 +157,11 @@ class COCOInstanceSegmentationDataset(Dataset):
         Returns:
             Binary masks tensor of shape [num_instances, H, W]
         """
-        # Get unique instance IDs
         # Check if batch dimension exists
         has_batch_dim = instance_tensor.dim() == 3
         
         if has_batch_dim:
-            # Add batch dimension for processing
+            # Remove batch dimension for processing
             instance_tensor = instance_tensor.squeeze(0)
             
         instance_ids = torch.unique(instance_tensor)
@@ -570,19 +173,45 @@ class COCOInstanceSegmentationDataset(Dataset):
         # Create binary mask for each instance
         binary_masks = []
         for instance_id in instance_ids:
-            binary_mask = (instance_tensor == instance_id).float()
-            binary_masks.append(binary_mask)
-        
-        # Stack masks along first dimension
-        if binary_masks:
-            return torch.stack(binary_masks, dim=0)
-        else:
-            # Return empty tensor with correct shape if no instances
-            return torch.zeros((0, *instance_tensor.shape), device=instance_tensor.device)
+            binary_mask = (instance_tensor == instance_id)
+            binary_masks.append(binary_mask.float())
 
-    def _prepare_instance_tensors(self, semantic_tensor, instance_tensor, class_ids_tensor=None, num_classes=2):
+        return binary_masks
+    
+    def _create_boxes_from_masks_tensor_xyxy(self, instance_masks):
         """
-        Prepare tensor data for instance segmentation training
+        Create bounding boxes from instance mask tensors in xyxy format
+        
+        Args:
+            instance_masks: Tensor of shape [num_instances, H, W] with binary masks
+            
+        Returns:
+            Tensor of boxes with shape [num_instances, 4] in format [x1, y1, x2, y2]
+        """
+        num_instances = len(instance_masks)
+        
+        boxes = torch.zeros((num_instances, 4), device=self.device)
+        
+        for i, mask in enumerate(instance_masks):
+            # Find non-zero indices
+            y_indices, x_indices = torch.where(mask > 0.5)
+            if len(y_indices) == 0:
+                # Empty mask, add a dummy box
+                boxes[i] = torch.tensor([0, 0, 1, 1], device=self.device)
+                continue
+                
+            # Get bounding box coordinates in xyxy format
+            x1, x2 = torch.min(x_indices), torch.max(x_indices)
+            y1, y2 = torch.min(y_indices), torch.max(y_indices)
+            
+            # Add box in [x1, y1, x2, y2] format
+            boxes[i] = torch.tensor([x1, y1, x2, y2], device=self.device)
+        
+        return boxes
+        
+    def _prepare_instance_tensors_with_boxes(self, semantic_tensor, instance_tensor, class_ids_tensor=None, num_classes=2):
+        """
+        Prepare tensor data for instance segmentation training with YOLO-style bbox format
         
         Args:
             semantic_tensor: Tensor [H, W] with semantic class indices
@@ -591,11 +220,12 @@ class COCOInstanceSegmentationDataset(Dataset):
             num_classes: Number of semantic classes
             
         Returns:
-            Dictionary with prepared tensors
+            Dictionary with prepared tensors including YOLO-style bbox format
         """
         instance_masks = self._instance_id_tensor_to_binary_masks(instance_tensor)
+        num_instances = len(instance_masks)
+        h,w = semantic_tensor.shape
 
-        num_instances = instance_masks.shape[0]
         
         # One-hot encode semantic mask
         semantic_one_hot = self._one_hot_encode_tensor(semantic_tensor, num_classes)
@@ -611,27 +241,222 @@ class COCOInstanceSegmentationDataset(Dataset):
                     most_common_class = torch.mode(masked_semantic).values
                     class_ids.append(most_common_class)
                 else:
-                    class_ids.append(torch.tensor(0, device=semantic_tensor.device))
+                    class_ids.append(torch.tensor(0, device=self.device))
             
             class_ids_tensor = torch.stack(class_ids)
+        elif class_ids_tensor is None:
+            # No instances, create empty tensor
+            class_ids_tensor = torch.zeros(0, dtype=torch.long, device=self.device)
         
-        # Create center points heatmap
-        centers_heatmap = self._create_center_heatmap_tensor(instance_masks)
-        
-        # Create bounding boxes
-        boxes = self._create_boxes_from_masks_tensor(instance_masks)
+        # Create bounding boxes in xyxy format
+        boxes_xyxy = self._create_boxes_from_masks_tensor_xyxy(instance_masks)
+        boxes_xywh = self._xyxy_to_xywh(boxes_xyxy)
+        boxes_norm = self._normalize_boxes(boxes_xywh, format= "xywh", image_size= (h,w))
 
 
-        
+        #convert them to yolo: class, x,y,w,h (normalized)
+        boxes_yolo_style = []
+        for box, cls in zip(boxes_norm, class_ids_tensor):
+            yolo_style = []
+            yolo_style.append(cls)
+            yolo_style.extend(box)
+            boxes_yolo_style.append(torch.tensor(yolo_style))
+
         return {
             'mask': semantic_tensor,
             'semantic_one_hot': semantic_one_hot,
             'instance_masks': instance_masks,
             'instance_classes': class_ids_tensor,
-            'centers': centers_heatmap,
-            'boxes': boxes
-        }
+            'boxes_xyxy': boxes_xyxy,
+            'boxes_yolo_style': boxes_yolo_style
+            }
+
+
+    def _xyxy_to_xywh(self, boxes: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:
+        """
+        Convert bounding boxes from XYXY format to XYWH format.
         
+        Args:
+            boxes: Bounding boxes in XYXY format [N, 4] where each box is [x1, y1, x2, y2]
+                Can be either torch.Tensor or numpy.ndarray
+                
+        Returns:
+            Bounding boxes in XYWH format [N, 4] where each box is [x_center, y_center, width, height]
+            Same type as input (torch.Tensor or numpy.ndarray)
+            
+        Examples:
+            >>> # PyTorch tensor example
+            >>> boxes_xyxy = torch.tensor([[10, 20, 50, 80], [100, 150, 200, 250]])
+            >>> boxes_xywh = xyxy_to_xywh(boxes_xyxy)
+            >>> print(boxes_xywh)
+            tensor([[ 30.,  50.,  40.,  60.],
+                    [150., 200., 100., 100.]])
+            
+            >>> # NumPy array example
+            >>> boxes_xyxy_np = np.array([[10, 20, 50, 80], [100, 150, 200, 250]])
+            >>> boxes_xywh_np = xyxy_to_xywh(boxes_xyxy_np)
+            >>> print(boxes_xywh_np)
+            [[ 30.  50.  40.  60.]
+            [150. 200. 100. 100.]]
+        """
+        # Handle empty input
+        if len(boxes) == 0:
+            if isinstance(boxes, torch.Tensor):
+                return torch.zeros((0, 4), dtype=boxes.dtype, device=self.device)
+            else:
+                return np.zeros((0, 4), dtype=boxes.dtype)
+        
+        # Ensure input has correct shape
+        assert boxes.shape[-1] == 4, f"Expected boxes to have 4 coordinates, got {boxes.shape[-1]}"
+        
+        # Handle both single box and batch of boxes
+        if boxes.ndim == 1:
+            # Single box case
+            if isinstance(boxes, torch.Tensor):
+                x1, y1, x2, y2 = boxes.unbind(-1)
+            else:
+                x1, y1, x2, y2 = boxes
+            
+            # Calculate center coordinates and dimensions
+            x_center = (x1 + x2) / 2
+            y_center = (y1 + y2) / 2
+            width = x2 - x1
+            height = y2 - y1
+            
+            # Stack results
+            if isinstance(boxes, torch.Tensor):
+                return torch.stack([x_center, y_center, width, height])
+            else:
+                return np.array([x_center, y_center, width, height])
+        
+        else:
+            # Batch of boxes case
+            if isinstance(boxes, torch.Tensor):
+                x1, y1, x2, y2 = boxes.unbind(-1)
+            else:
+                x1, y1, x2, y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+            
+            # Calculate center coordinates and dimensions
+            x_center = (x1 + x2) / 2
+            y_center = (y1 + y2) / 2
+            width = x2 - x1
+            height = y2 - y1
+            
+            # Stack results
+            if isinstance(boxes, torch.Tensor):
+                return torch.stack([x_center, y_center, width, height], dim=-1)
+            else:
+                return np.stack([x_center, y_center, width, height], axis=-1)
+
+
+    def _xywh_to_xyxy(self, boxes: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:
+        """
+        Convert bounding boxes from XYWH format to XYXY format.
+        
+        Args:
+            boxes: Bounding boxes in XYWH format [N, 4] where each box is [x_center, y_center, width, height]
+                Can be either torch.Tensor or numpy.ndarray
+                
+        Returns:
+            Bounding boxes in XYXY format [N, 4] where each box is [x1, y1, x2, y2]
+            Same type as input (torch.Tensor or numpy.ndarray)
+            
+        Examples:
+            >>> # PyTorch tensor example
+            >>> boxes_xywh = torch.tensor([[30, 50, 40, 60], [150, 200, 100, 100]])
+            >>> boxes_xyxy = xywh_to_xyxy(boxes_xywh)
+            >>> print(boxes_xyxy)
+            tensor([[ 10.,  20.,  50.,  80.],
+                    [100., 150., 200., 250.]])
+        """
+        # Handle empty input
+        if len(boxes) == 0:
+            if isinstance(boxes, torch.Tensor):
+                return torch.zeros((0, 4), dtype=boxes.dtype, device=boxes.device)
+            else:
+                return np.zeros((0, 4), dtype=boxes.dtype)
+        
+        # Ensure input has correct shape
+        assert boxes.shape[-1] == 4, f"Expected boxes to have 4 coordinates, got {boxes.shape[-1]}"
+        
+        # Handle both single box and batch of boxes
+        if boxes.ndim == 1:
+            # Single box case
+            if isinstance(boxes, torch.Tensor):
+                x_center, y_center, width, height = boxes.unbind(-1)
+            else:
+                x_center, y_center, width, height = boxes
+            
+            # Calculate corner coordinates
+            x1 = x_center - width / 2
+            y1 = y_center - height / 2
+            x2 = x_center + width / 2
+            y2 = y_center + height / 2
+            
+            # Stack results
+            if isinstance(boxes, torch.Tensor):
+                return torch.stack([x1, y1, x2, y2])
+            else:
+                return np.array([x1, y1, x2, y2])
+        
+        else:
+            # Batch of boxes case
+            if isinstance(boxes, torch.Tensor):
+                x_center, y_center, width, height = boxes.unbind(-1)
+            else:
+                x_center, y_center, width, height = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+            
+            # Calculate corner coordinates
+            x1 = x_center - width / 2
+            y1 = y_center - height / 2
+            x2 = x_center + width / 2
+            y2 = y_center + height / 2
+            
+            # Stack results
+            if isinstance(boxes, torch.Tensor):
+                return torch.stack([x1, y1, x2, y2], dim=-1)
+            else:
+                return np.stack([x1, y1, x2, y2], axis=-1)
+
+
+    def _normalize_boxes(self, boxes: Union[torch.Tensor, np.ndarray], 
+                    image_size: tuple,
+                    format: str = 'xyxy') -> Union[torch.Tensor, np.ndarray]:
+        """
+        Normalize bounding box coordinates to [0, 1] range.
+        
+        Args:
+            boxes: Bounding boxes [N, 4]
+            image_size: (height, width) of the image
+            format: Either 'xyxy' or 'xywh' to specify box format
+            
+        Returns:
+            Normalized boxes with coordinates in [0, 1] range
+        """
+        height, width = image_size
+        
+        if isinstance(boxes, torch.Tensor):
+            boxes_norm = boxes.clone()
+        else:
+            boxes_norm = boxes.copy()
+        
+        if format == 'xyxy':
+            # x1, y1, x2, y2
+            boxes_norm[..., 0] /= width   # x1
+            boxes_norm[..., 1] /= height  # y1
+            boxes_norm[..., 2] /= width   # x2
+            boxes_norm[..., 3] /= height  # y2
+        elif format == 'xywh':
+            # x_center, y_center, width, height
+            boxes_norm[..., 0] /= width   # x_center
+            boxes_norm[..., 1] /= height  # y_center
+            boxes_norm[..., 2] /= width   # width
+            boxes_norm[..., 3] /= height  # height
+        else:
+            raise ValueError(f"Unknown format: {format}. Expected 'xyxy' or 'xywh'")
+        
+        return boxes_norm
+            
     def _one_hot_encode_tensor(self, mask_tensor, num_classes):
         """
         Convert a single-channel class index tensor to one-hot format
@@ -657,7 +482,7 @@ class COCOInstanceSegmentationDataset(Dataset):
         B, H, W = mask_tensor.shape
         
         # Create one-hot tensor [B, num_classes, H, W]
-        one_hot = torch.zeros((B, num_classes, H, W), dtype=torch.float32, device=mask_tensor.device)
+        one_hot = torch.zeros((B, num_classes, H, W), dtype=torch.float32, device=self.device)
         
         # Scatter to fill in the one-hot representation
         one_hot.scatter_(1, mask_tensor.unsqueeze(1), 1.0)
@@ -667,31 +492,52 @@ class COCOInstanceSegmentationDataset(Dataset):
             one_hot = one_hot.squeeze(0)
         
         return one_hot
+
+
+def instance_segmentation_collate_fn(batch):
+    """
+    Collate function for instance segmentation that handles variable numbers of instances
+    Similar to YOLO's approach but for instance segmentation data
+    
+    Args:
+        batch: List of samples from the dataset
         
-    def _hsv_to_rgb(self, h, s, v):
-        """Convert HSV color to RGB color"""
         if s == 0.0:
-            return v, v, v
-        
-        i = int(h * 6)
-        f = (h * 6) - i
-        p = v * (1 - s)
-        q = v * (1 - s * f)
-        t = v * (1 - s * (1 - f))
-        i %= 6
-        
-        if i == 0:
-            return v, t, p
-        elif i == 1:
-            return q, v, p
-        elif i == 2:
-            return p, v, t
-        elif i == 3:
-            return p, q, v
-        elif i == 4:
-            return t, p, v
-        else:
-            return v, p, q
+    Returns:
+        Batched data with images stacked and boxes as list of tensors
+    """
+    # Separate the components
+    images = []
+    boxes_list = []
+    instance_masks_list = []
+    img_ids = []
+    masks = []
+    
+    for sample in batch:
+        images.append(sample['rgb'])
+        boxes_list.append(sample['boxes'])  # Each sample['boxes'] is already a list
+        instance_masks_list.append(sample['instance_masks'])
+        img_ids.append(sample['img_id'])
+        masks.append(sample["mask"])    
+    
+    # Stack images into a batch 
+    images = torch.stack(images, dim=0)
+    # stack masks into a batch
+    masks = torch.stack(masks, dim = 0)
+    
+    # Keep boxes as list of tensors (YOLO-style)
+    # boxes_list is now a list where each element is a tensor of boxes for one image
+    
+    # Keep instance masks as list (since each image can have different numbers of instances)
+    # instance_masks_list remains as a list of tensors
+    
+    return {
+        'rgb': images,
+        'boxes': boxes_list,  # List of tensors, one list per image
+        'instance_masks': instance_masks_list,  # List of tensors, one  list per image
+        'img_ids': img_ids,
+        'mask' : masks,
+    }
 
 def create_transforms(target_size=(224, 224)):
     """
@@ -853,7 +699,7 @@ class InstanceJointTransform:
             else:
                 # Handle empty case
                 result['instance_masks'] = torch.zeros((0, self.img_size, self.img_size),
-                                                     device=image_trans.device)
+                                                     device=self.device)
         
         # Transform centers heatmap if provided
         if 'centers' in sample and sample['centers'] is not None:
@@ -884,20 +730,7 @@ def get_instance_transforms(img_size=224, augment=True):
     """
     return InstanceJointTransform(img_size=img_size, strong=augment)
 
-    
-
-def get_instance_transforms(img_size=224, augment=True):
-    """
-    Create transforms for instance segmentation tasks using safe transforms
-    
-    Args:
-        img_size: Target image size (int or tuple)
-        augment: Whether to apply data augmentation
-        
-    Returns:
-        transform: Transform for instance segmentation samples
-    """
-    return InstanceJointTransform(img_size=img_size, strong=augment)
+ 
 
 class InstanceSegJointTransform:
     """
@@ -1171,7 +1004,7 @@ class InstanceSegJointTransform:
         
         # Convert back to tensor or numpy
         if is_tensor:
-            return torch.tensor(transformed_boxes, dtype=torch.float32, device=boxes.device)
+            return torch.tensor(transformed_boxes, dtype=torch.float32, device=self.device)
         else:
             return np.array(transformed_boxes)
     
@@ -1273,105 +1106,3 @@ def get_instance_transforms(img_size=224, augment=True):
         transform: Transform for instance segmentation samples
     """
     return InstanceSegJointTransform(img_size=img_size, strong=augment)
-
-def augmented_duplicates_collate_fn(batch_size=16, img_size=224, strong_augment=True):
-    """
-    Creates a collate function that duplicates a single sample and applies
-    different random augmentations to create a diverse batch
-    
-    Args:
-        batch_size: Size of the target batch
-        img_size: Size of the output image
-        strong_augment: Whether to use strong augmentation
-        
-    Returns:
-        collate_fn: Function that creates a batch of augmented duplicates
-    """
-    # Create the augmentation transform
-    augment_transform = InstanceSegJointTransform(img_size=img_size, strong=strong_augment)
-    
-    def collate_fn(batch):
-        """
-        Duplicate a single sample with different augmentations to fill a batch
-        
-        Args:
-            batch: List containing a single sample
-            
-        Returns:
-            Batch dictionary with the sample augmented batch_size times
-        """
-        # Make sure we have at least one sample
-        if not batch or len(batch) == 0:
-            raise ValueError("Batch must contain at least one sample")
-        
-        # Take the first sample as our base
-        base_sample = batch[0]
-        
-        # Create a list to hold augmented samples
-        augmented_samples = []
-        
-        # Apply different random augmentations batch_size times
-        for _ in range(batch_size):
-            # Create a copy of the base sample
-            sample_copy = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in base_sample.items()}
-            
-            # Apply a new random augmentation
-            augmented_sample = augment_transform(sample_copy)
-            
-            # Ensure instance data is properly prepared
-            if 'instance' in augmented_sample:
-                # Access dataset's prepare_instance_tensors method if the dataset is available
-                # This part depends on how your dataset class is structured
-                instance_data = None
-                
-                try:
-                    # Try to use _prepare_instance_tensors from the dataset
-                    dataset = batch[0].get('_dataset', None)
-                    if dataset and hasattr(dataset, '_prepare_instance_tensors'):
-                        instance_data = dataset._prepare_instance_tensors(
-                            semantic_tensor=augmented_sample['mask'],
-                            instance_tensor=augmented_sample['instance'],
-                            num_classes=dataset.num_classes
-                        )
-                except:
-                    # Fallback - implement inline if needed
-                    from multissl.data.instance_segmentation_dataset import COCOInstanceSegmentationDataset
-                    dummy_dataset = COCOInstanceSegmentationDataset.__new__(COCOInstanceSegmentationDataset)
-                    dummy_dataset.num_classes = 2  # Default to binary segmentation
-                    
-                    # Add the _prepare_instance_tensors method
-                    instance_data = dummy_dataset._prepare_instance_tensors(
-                        semantic_tensor=augmented_sample['mask'],
-                        instance_tensor=augmented_sample['instance'],
-                        num_classes=dummy_dataset.num_classes
-                    )
-                
-                if instance_data:
-                    augmented_sample.update(instance_data)
-            
-            augmented_samples.append(augmented_sample)
-        
-        # Combine all augmented samples into a batch
-        batch_dict = {}
-        for key in augmented_samples[0].keys():
-            if isinstance(augmented_samples[0][key], torch.Tensor):
-                # For tensors, stack along batch dimension
-                if key in ['img_id']:
-                    # For scalar tensors, collect as list
-                    batch_dict[key] = [sample[key] for sample in augmented_samples]
-                else:
-                    # Stack tensors along batch dimension
-                    batch_dict[key] = torch.stack([sample[key] for sample in augmented_samples], dim=0)
-            elif isinstance(augmented_samples[0][key], (int, float, str)):
-                # For scalar values, collect in a list
-                batch_dict[key] = [sample[key] for sample in augmented_samples]
-            elif augmented_samples[0][key] is None:
-                # Keep None values
-                batch_dict[key] = None
-            else:
-                # For other types, just collect in a list
-                batch_dict[key] = [sample[key] for sample in augmented_samples]
-        
-        return batch_dict
-    
-    return collate_fn

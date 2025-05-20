@@ -8,5 +8,5 @@ from .multisensor_swin import VariableBandSwinTransformer
 from .feature_pca import FeaturePCA, OnlineFeaturePCA
 from .msrgb_convnext import MSRGBConvNeXt
 from .msrgb_convnext_upernet import MSRGBConvNeXtUPerNet, MSRGBConvNeXtUPerNetModule
-from .msrgb_convnext_instance import MSRGBConvNeXtInstanceSegmentation, MSRGBConvNeXtInstanceSegmentationModule
+from .msrgb_convnext_instance import MSRGBInstanceModule
 from .pasiphae_upernet import PasiphaeUPerNetModule, PasiphaeUPerNet
