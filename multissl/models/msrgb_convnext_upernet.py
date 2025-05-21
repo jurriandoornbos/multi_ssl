@@ -1,208 +1,282 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Dict, List, Optional, Union, Tuple
 import pytorch_lightning as pl
-from typing import Dict, List, Optional, Tuple, Union
+import torchmetrics
+from torchmetrics import JaccardIndex, Accuracy, Precision, Recall, F1Score
 
 from .msrgb_convnext import MSRGBConvNeXtFeatureExtractor
 
 class PPM(nn.Module):
     """
-    Pyramid Pooling Module (PPM) from PSPNet
-    
-    Performs pooling at multiple scales and concatenates the results
-    to capture global context information.
+    Pyramid Pooling Module (PPM) as used in PSPNet and UPerNet
     """
-    def __init__(self, in_dim, reduction_dim, bins=(1, 2, 3, 6)):
+    def __init__(self, in_channels, pool_sizes=(1, 2, 3, 6), norm_layer=nn.BatchNorm2d):
         super(PPM, self).__init__()
-        self.features = []
-        for bin in bins:
-            self.features.append(
-                nn.Sequential(
-                    nn.AdaptiveAvgPool2d(bin),
-                    nn.Conv2d(in_dim, reduction_dim, kernel_size=1, bias=False),
-                    nn.BatchNorm2d(reduction_dim),
-                    nn.ReLU(inplace=True)
-                )
+        self.pool_sizes = pool_sizes
+        out_channels = in_channels // len(pool_sizes)
+        
+        self.stages = nn.ModuleList([
+            nn.Sequential(
+                nn.AdaptiveAvgPool2d(pool_size),
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                norm_layer(out_channels),
+                nn.ReLU(inplace=True)
             )
-        self.features = nn.ModuleList(self.features)
-
+            for pool_size in pool_sizes
+        ])
+        
     def forward(self, x):
-        x_size = x.size()
-        out = [x]
-        for f in self.features:
-            out.append(F.interpolate(f(x), x_size[2:], mode='bilinear', align_corners=True))
-        return torch.cat(out, 1)
+        h, w = x.shape[2], x.shape[3]
+        features = [x]
+        
+        for stage in self.stages:
+            feat = stage(x)
+            feat = F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=True)
+            features.append(feat)
+            
+        return torch.cat(features, dim=1)
 
+class FPNFPN(nn.Module):
+    """
+    Feature Pyramid Network (FPN) with lateral connections
+    """
+    def __init__(self, in_channels_list, out_channels, norm_layer=nn.BatchNorm2d):
+        super(FPNFPN, self).__init__()
+        
+        self.lateral_convs = nn.ModuleList()
+        self.fpn_convs = nn.ModuleList()
+        
+        # Lateral connections - reduce each input to the same channel dimension
+        for in_channels in in_channels_list:
+            self.lateral_convs.append(nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                norm_layer(out_channels),
+                nn.ReLU(inplace=True)
+            ))
+        
+        # FPN convs - apply 3x3 convolution to each output
+        for _ in range(len(in_channels_list)):
+            self.fpn_convs.append(nn.Sequential(
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                norm_layer(out_channels),
+                nn.ReLU(inplace=True)
+            ))
+            
+    def forward(self, inputs):
+        # Apply lateral convs to create same channel features
+        laterals = [conv(inp) for conv, inp in zip(self.lateral_convs, inputs)]
+        
+        # Top-down pathway with upsampling
+        used_backbone_levels = len(laterals)
+        for i in range(used_backbone_levels - 1, 0, -1):
+            h, w = laterals[i-1].shape[2:]
+            laterals[i-1] = laterals[i-1] + F.interpolate(
+                laterals[i], size=(h, w), mode='bilinear', align_corners=True)
+            
+        # Apply FPN convs
+        outs = [fpn_conv(lateral) for fpn_conv, lateral in zip(self.fpn_convs, laterals)]
+        
+        return outs
+
+class UPerNetHead(nn.Module):
+    """
+    UPerNet Segmentation Head combining PPM and FPN for multi-scale feature fusion
+    """
+    def __init__(
+        self,
+        feature_dims: Dict[str, int],
+        num_classes: int,
+        fpn_channels: int = 256,
+        dropout: float = 0.1,
+        aux_loss: bool = False,
+        pool_scales: Tuple[int] = (1, 2, 3, 6),
+        norm_layer: nn.Module = nn.BatchNorm2d
+    ):
+        super(UPerNetHead, self).__init__()
+        
+        # Extract feature dimensions from backbone
+        self.in_channels = list(feature_dims.values())  # Ordered list of channel dims
+        
+        # PPM module on the last layer
+        self.ppm = PPM(self.in_channels[-1], pool_sizes=pool_scales, norm_layer=norm_layer)
+        
+        # Calculate input channels after PPM (original + outputs from each pooling branch)
+        ppm_channels = self.in_channels[-1] + self.in_channels[-1] // len(pool_scales) * len(pool_scales)
+        
+        # 1x1 conv after PPM to reduce channels
+        self.ppm_bottleneck = nn.Sequential(
+            nn.Conv2d(ppm_channels, fpn_channels, kernel_size=1, bias=False),
+            norm_layer(fpn_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # FPN to fuse features from different levels
+        fpn_in_channels = self.in_channels[:-1]  # All but last layer (which uses PPM)
+        fpn_in_channels.append(fpn_channels)  # Add PPM output
+        self.fpn = FPNFPN(fpn_in_channels, fpn_channels, norm_layer=norm_layer)
+        
+        # Final fusion conv for all FPN outputs
+        self.fpn_fusion = nn.Sequential(
+            nn.Conv2d(fpn_channels * len(fpn_in_channels), fpn_channels, kernel_size=1, bias=False),
+            norm_layer(fpn_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Dropout
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+        
+        # Final classifier
+        self.classifier = nn.Conv2d(fpn_channels, num_classes, kernel_size=1)
+        
+        # Auxiliary loss if needed
+        self.aux_loss = aux_loss
+        if aux_loss:
+            self.aux_classifier = nn.Sequential(
+                nn.Conv2d(self.in_channels[2], fpn_channels, kernel_size=3, padding=1, bias=False),
+                norm_layer(fpn_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(dropout),
+                nn.Conv2d(fpn_channels, num_classes, kernel_size=1)
+            )
+            
+    def forward(self, features: Dict[str, torch.Tensor]):
+        # Extract features in order from shallow to deep
+        feat_list = [features[f'layer{i+1}'] for i in range(len(self.in_channels))]
+        
+        # Apply PPM to the deepest features
+        ppm_out = self.ppm(feat_list[-1])
+        ppm_out = self.ppm_bottleneck(ppm_out)
+        
+        # Replace the last feature with PPM output for FPN
+        fpn_in = feat_list[:-1] + [ppm_out]
+        
+        # Apply FPN
+        fpn_out = self.fpn(fpn_in)
+        
+        # Resize all FPN outputs to the size of the smallest feature map
+        target_h, target_w = fpn_out[0].shape[2:]
+        
+        # Upsample and concat all FPN outputs
+        concat_features = []
+        for feat in fpn_out:
+            if feat.shape[2:] != (target_h, target_w):
+                feat = F.interpolate(feat, size=(target_h, target_w), 
+                                    mode='bilinear', align_corners=True)
+            concat_features.append(feat)
+        
+        # Fuse all features
+        output = self.fpn_fusion(torch.cat(concat_features, dim=1))
+        output = self.dropout(output)
+        
+        # Final classifier
+        output = self.classifier(output)
+        
+        # Upsample to input resolution if needed (often done in the loss function)
+        
+        # Handle auxiliary loss if needed
+        if self.aux_loss and self.training:
+            aux_output = self.aux_classifier(feat_list[2])  # Use mid-level features
+            return output, aux_output
+        
+        return output
+    
 class UPerNet(nn.Module):
     """
-    Unified Perceptual Parsing Network (UPerNet) segmentation head
-    
-    Combines feature maps from different stages of the backbone
-    using Feature Pyramid Network (FPN) and Pyramid Pooling Module (PPM).
+    Complete UPerNet model combining the backbone feature extractor with the UPerNet head
     """
     def __init__(
         self,
-        in_channels: List[int],
+        backbone,
         num_classes: int,
-        fpn_dim: int = 256,
-        ppm_bins: Tuple[int] = (1, 2, 3, 6),
-        aux_heads: bool = True
+        fpn_channels: int = 256,
+        dropout: float = 0.1,
+        aux_loss: bool = False,
+        upsample_output: bool = True
     ):
         super(UPerNet, self).__init__()
-        self.in_channels = in_channels
-        self.aux_heads = aux_heads
-        
-        # Print input channel dimensions for debugging
-        print(f"UPerNet input channels: {in_channels}")
-        
-        # PPM module on the last feature map
-        ppm_reduction_dim = fpn_dim // len(ppm_bins)
-        self.ppm = PPM(in_channels[-1], ppm_reduction_dim, ppm_bins)
-        ppm_out_dim = in_channels[-1] + ppm_reduction_dim * len(ppm_bins)
-        
-        # FPN lateral connections (bottom-up path)
-        self.fpn_in = nn.ModuleList()
-        for in_c in in_channels[:-1]:  # Skip the last one as it's handled by PPM
-            self.fpn_in.append(nn.Sequential(
-                nn.Conv2d(in_c, fpn_dim, kernel_size=1, bias=False),
-                nn.BatchNorm2d(fpn_dim),
-                nn.ReLU(inplace=True)
-            ))
-            
-        # FPN output connections (top-down path)
-        self.fpn_out = nn.ModuleList()
-        for _ in range(len(in_channels) - 1):  # -1 because the last one is handled by PPM
-            self.fpn_out.append(nn.Sequential(
-                nn.Conv2d(fpn_dim, fpn_dim, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(fpn_dim),
-                nn.ReLU(inplace=True)
-            ))
-            
-        # Handle the last feature map with PPM - adjust dimensions
-        self.fpn_bottleneck = nn.Sequential(
-            nn.Conv2d(ppm_out_dim, fpn_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(fpn_dim),
-            nn.ReLU(inplace=True)
-        )
-        
-        # Feature fusion module
-        self.fusion = nn.Sequential(
-            nn.Conv2d(len(in_channels) * fpn_dim, fpn_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(fpn_dim, fpn_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(fpn_dim),
-            nn.ReLU(inplace=True)
-        )
-        
-        # Final classifier
-        self.classifier = nn.Conv2d(fpn_dim, num_classes, kernel_size=1)
-        
-        # Auxiliary heads for deep supervision if needed
-        if aux_heads:
-            self.aux_heads = nn.ModuleList([
-                nn.Conv2d(fpn_dim, num_classes, kernel_size=1)
-                for _ in range(len(in_channels))
-            ])
-        
-    def forward(self, features: List[torch.Tensor], return_aux=False):
-        """
-        Forward pass for the UPerNet head
-        
-        Args:
-            features: List of feature maps from the backbone [feat1, feat2, ..., featN]
-                     ordered from lowest resolution to highest
-            return_aux: Whether to return auxiliary predictions for deep supervision
-            
-        Returns:
-            logits: Segmentation logits at the highest resolution
-            aux_outputs: Optional auxiliary outputs at each FPN level
-        """
-        
-        # Create a local copy of features list to avoid modifying the input
-        feats = features.copy()
-        
-        # Apply PPM to the last (deepest) feature map
-        ppm_out = self.ppm(feats[-1])
-        feats[-1] = self.fpn_bottleneck(ppm_out)
-        
-        # Build FPN from bottom to top (high-level to low-level features)
-        fpn_features = [feats[-1]]
-        for i in reversed(range(len(self.in_channels) - 1)):
-            feat = feats[i]
-            lateral = self.fpn_in[i](feat)
-            
-            # Top-down pathway: upsample higher-level features
-            top_down = F.interpolate(
-                fpn_features[0], size=lateral.shape[2:], 
-                mode='bilinear', align_corners=True
-            )
-            
-            # Add lateral connection
-            fpn_feat = lateral + top_down
-            
-            # Apply convolution to the summed features
-            fpn_feat = self.fpn_out[i](fpn_feat)
-            
-            # Insert the new feature at the beginning of the list
-            fpn_features.insert(0, fpn_feat)
-        
-        # Generate auxiliary outputs for deep supervision
-        aux_outputs = None
-        if self.aux_heads and return_aux:
-            aux_outputs = []
-            for i, feat in enumerate(fpn_features):
-                aux_out = self.aux_heads[i](feat)
-                aux_outputs.append(aux_out)
-        
-        # Upsample all feature maps to the highest resolution (level of the first feature map)
-        output_size = fpn_features[0].shape[2:]
-        aligned_features = []
-        
-        for i, feat in enumerate(fpn_features):
-            if i == 0:  # Skip the first one as it's already at the highest resolution
-                aligned_features.append(feat)
-            else:
-                # Upsample to match the resolution of the first feature map
-                upsampled = F.interpolate(
-                    feat, size=output_size, mode='bilinear', align_corners=True
-                )
-                aligned_features.append(upsampled)
-        
-        # Concatenate all FPN levels and apply fusion
-        fused = torch.cat(aligned_features, dim=1)
-        fused = self.fusion(fused)
-        
-        # Final classifier
-        logits = self.classifier(fused)
-        
-        if return_aux:
-            return logits, aux_outputs
-        return logits
+        self.backbone = backbone
 
-class MSRGBConvNeXtUPerNet(nn.Module):
+        self.upsample_output = upsample_output
+        
+        # Get feature dimensions from backbone
+        self.feature_dims = backbone.feature_dims
+        
+        # Create segmentation head
+        self.decode_head = UPerNetHead(
+            feature_dims=self.feature_dims,
+            num_classes=num_classes,
+            fpn_channels=fpn_channels,
+            dropout=dropout,
+            aux_loss=aux_loss
+        )
+        
+    def forward(self, rgb=None, ms=None):
+        # Extract features from backbone
+        features = self.backbone(rgb=rgb, ms=ms)
+        
+        # Apply segmentation head
+        seg_logits = self.decode_head(features)
+        
+        # Upsample to input resolution if needed
+        if self.upsample_output and isinstance(seg_logits, tuple):
+            # Handle case with auxiliary loss
+            main_out, aux_out = seg_logits
+            input_size = rgb.shape[2:] if rgb is not None else ms.shape[2:]
+            main_out = F.interpolate(main_out, size=input_size, 
+                                    mode='bilinear', align_corners=True)
+            aux_out = F.interpolate(aux_out, size=input_size, 
+                                   mode='bilinear', align_corners=True)
+            return main_out, aux_out
+        elif self.upsample_output:
+            # Regular case
+            input_size = rgb.shape[2:] if rgb is not None else ms.shape[2:]
+            seg_logits = F.interpolate(seg_logits, size=input_size, 
+                                     mode='bilinear', align_corners=True)
+            
+        return seg_logits
+    
+
+class MSRGBConvNeXtUPerNet(pl.LightningModule):
     """
-    Combined MSRGBConvNeXt backbone with UPerNet segmentation head
+    PyTorch Lightning module for training and evaluating a dual-modality segmentation model
     """
     def __init__(
         self,
-        num_classes: int,
-        rgb_in_channels: int = 3,
-        ms_in_channels: int = 5,
-        model_size: str = 'tiny',  # 'tiny', 'small', 'base', 'large'
-        fusion_strategy: str = 'hierarchical',
-        fusion_type: str = 'attention',
-        fpn_dim: int = 256,
-        drop_path_rate: float = 0.1,
-        aux_heads: bool = True,
+        model_size='tiny',
+        rgb_in_channels=3,
+        ms_in_channels=5,
+        num_classes=2,
+        fusion_strategy='hierarchical',
+        fusion_type='attention',
+        drop_path_rate=0.0,
+        learning_rate: float = 1e-4,
+        weight_decay: float = 1e-4,
+        lr_scheduler: str = 'cosine',  # 'cosine', 'step', 'poly'
+        lr_warmup_epochs: int = 5,
         use_aux_loss: bool = True,
         aux_weight: float = 0.4,
-        pretrained_backbone: Optional[str] = None
+        class_weights: Optional[torch.Tensor] = None,
+        ignore_index: int = 255,
+        pretrained_backbone = None,
+        freeze_backbone: bool = False,
+        upsample_output: bool = True,
+        fpn_channels: int = 256,
+        dropout: float = 0.1,
     ):
-        super(MSRGBConvNeXtUPerNet, self).__init__()
+        super().__init__()
+        self.save_hyperparameters(ignore=['model'])
+        self.num_classes = num_classes
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.lr_scheduler = lr_scheduler
+        self.lr_warmup_epochs = lr_warmup_epochs
+        self.use_aux_loss = use_aux_loss
+        self.aux_weight = aux_weight
+        self.upsample_output = upsample_output
         
-        # Create backbone
+
         self.backbone = MSRGBConvNeXtFeatureExtractor(
             model_name=model_size,
             rgb_in_channels=rgb_in_channels,
@@ -211,85 +285,238 @@ class MSRGBConvNeXtUPerNet(nn.Module):
             fusion_type=fusion_type,
             drop_path_rate=drop_path_rate
         )
-        
-        # Get feature dimensions from backbone and print them for debugging
-        feature_dims = [
-            self.backbone.feature_dims[f'layer{i+1}'] 
-            for i in range(len(self.backbone.feature_dims) if 'flat' not in self.backbone.feature_dims 
-                           else len(self.backbone.feature_dims) - 1)
-        ]
-        
-        print(f"Feature dimensions from backbone: {feature_dims}")
-        
+
+        feature_dims = self.backbone.feature_dims
+        fpn_channels = fpn_channels
+        dropout = dropout
+        aux_loss = use_aux_loss
         # Create segmentation head
-        self.decode_head = UPerNet(
-            in_channels=feature_dims,
-            num_classes=num_classes,
-            fpn_dim=fpn_dim,
-            aux_heads=aux_heads
+        self.decode_head = UPerNetHead(
+            feature_dims=feature_dims,
+            num_classes=self.num_classes,
+            fpn_channels=fpn_channels,
+            dropout=dropout,
+            aux_loss=aux_loss
         )
         
-        # Loss settings
-        self.use_aux_loss = use_aux_loss
-        self.aux_weight = aux_weight
+        # Initialize loss function
+        if class_weights is not None:
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
+        else:
+            self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
+            
+        # Metrics
+        self.train_accuracy = Accuracy(task='multiclass', num_classes=num_classes, ignore_index=ignore_index)
+        self.val_accuracy = Accuracy(task='multiclass', num_classes=num_classes, ignore_index=ignore_index)
+        self.val_iou = JaccardIndex(task='multiclass', num_classes=num_classes, ignore_index=ignore_index)
+        self.val_f1 = F1Score(task='multiclass', num_classes=num_classes, ignore_index=ignore_index)
         
+        # Per-class metrics for validation
+        self.val_per_class_iou = JaccardIndex(
+            task='multiclass', 
+            num_classes=num_classes, 
+            average=None, 
+            ignore_index=ignore_index
+        )
+        self.val_per_class_f1 = F1Score(
+            task='multiclass', 
+            num_classes=num_classes, 
+            average=None, 
+            ignore_index=ignore_index
+        )
+            
+            
         # Initialize from pretrained weights if provided
         if pretrained_backbone:
             self._load_pretrained_backbone(pretrained_backbone)
-    
-    def forward(self, rgb=None, ms=None, return_aux=False):
-        """
-        Forward pass through backbone and segmentation head
-        """
-        # Get input size for upsampling
-        if rgb is not None:
-            input_size = rgb.shape[2:]
-        elif ms is not None:
-            input_size = ms.shape[2:]
-        else:
-            raise ValueError("At least one of RGB or MS input must be provided")
-        
-        # Extract features from backbone
-        feat_dict = self.backbone(rgb=rgb, ms=ms)
-        
-        # Convert to list ordered from lowest to highest resolution (for UPerNet)
-        # Note: This ordering might need adjustment based on your ConvNeXt implementation
-        features = []
-        for i in range(len(feat_dict) if 'flat' not in feat_dict else len(feat_dict) - 1):
-            key = f'layer{i+1}'
-            if key in feat_dict:
-                features.append(feat_dict[key])
+
+        if freeze_backbone:
+            self.backbone.requires_grad_(False)
+
+    def forward(self, rgb=None, ms=None):
+
+        features = self.backbone(rgb = rgb, ms= ms)
+
         # Apply segmentation head
-        if return_aux or self.use_aux_loss:
-            logits, aux_outputs = self.decode_head(features, return_aux=True)
-            
-            # Upsample logits to match input size
-            if logits.shape[2:] != input_size:
-                logits = F.interpolate(
-                    logits, size=input_size, mode='bilinear', align_corners=True
-                )
-                
-                # Also upsample auxiliary outputs
-                aux_outputs = [
-                    F.interpolate(aux, size=input_size, mode='bilinear', align_corners=True)
-                    for aux in aux_outputs
-                ]
-                
-            if return_aux:
-                return logits, aux_outputs
-            return logits
-        else:
-            logits = self.decode_head(features, return_aux=False)
-            
-            # Upsample logits to match input size
-            if logits.shape[2:] != input_size:
-                logits = F.interpolate(
-                    logits, size=input_size, mode='bilinear', align_corners=True
-                )
-                
-            return logits
-                # Load checkpoint if provided
+        seg_logits = self.decode_head(features)
         
+        # Upsample to input resolution if needed
+        if self.upsample_output and isinstance(seg_logits, tuple):
+            # Handle case with auxiliary loss
+            main_out, aux_out = seg_logits
+            input_size = rgb.shape[2:] if rgb is not None else ms.shape[2:]
+            main_out = F.interpolate(main_out, size=input_size, 
+                                    mode='bilinear', align_corners=True)
+            aux_out = F.interpolate(aux_out, size=input_size, 
+                                   mode='bilinear', align_corners=True)
+            return main_out, aux_out
+        
+        elif self.upsample_output:
+            # Regular case
+            input_size = rgb.shape[2:] if rgb is not None else ms.shape[2:]
+            seg_logits = F.interpolate(seg_logits, size=input_size, 
+                                     mode='bilinear', align_corners=True)
+            
+        return seg_logits
+    
+    def _get_inputs(self, batch):
+        """Extract RGB and MS inputs from batch based on requirements"""
+        rgb = batch.get('rgb', None)
+        ms = batch.get('ms', None) 
+        return rgb, ms
+    
+    def training_step(self, batch, batch_idx):
+        rgb, ms = self._get_inputs(batch)
+        target = batch['mask']
+        
+        # Forward pass
+        output = self(rgb=rgb, ms=ms)
+        
+        # Compute loss
+        if self.use_aux_loss and isinstance(output, tuple):
+            main_out, aux_out = output
+            main_loss = self.criterion(main_out, target)
+            aux_loss = self.criterion(aux_out, target)
+            loss = main_loss + self.aux_weight * aux_loss
+            preds = main_out
+        else:
+            loss = self.criterion(output, target)
+            preds = output
+            
+        # Calculate metrics
+        preds_argmax = preds.argmax(dim=1)
+        accuracy = self.train_accuracy(preds_argmax, target)
+        
+        # Log metrics
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train_accuracy', accuracy, on_step=False, on_epoch=True, prog_bar=True)
+        
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        rgb, ms = self._get_inputs(batch)
+        target = batch['mask']
+        
+        # Forward pass
+        output = self(rgb=rgb, ms=ms)
+        
+        # Handle aux loss outputs
+        if isinstance(output, tuple):
+            output = output[0]  # Use only main output for validation
+            
+        # Compute loss
+        loss = self.criterion(output, target)
+        
+        # Calculate metrics
+        preds = output.argmax(dim=1)
+        accuracy = self.val_accuracy(preds, target)
+        iou = self.val_iou(preds, target)
+        f1 = self.val_f1(preds, target)
+        
+        # Per-class metrics
+        per_class_iou = self.val_per_class_iou(preds, target)
+        per_class_f1 = self.val_per_class_f1(preds, target)
+        
+        # Log metrics
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_accuracy', accuracy, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_iou', iou, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_f1', f1, on_step=False, on_epoch=True, prog_bar=True)
+        
+        # Log per-class metrics
+        for i in range(self.num_classes):
+            self.log(f'val_iou_class_{i}', per_class_iou[i], on_step=False, on_epoch=True)
+            self.log(f'val_f1_class_{i}', per_class_f1[i], on_step=False, on_epoch=True)
+            
+        return loss
+    
+    def test_step(self, batch, batch_idx):
+        # Similar to validation step
+        return self.validation_step(batch, batch_idx)
+    
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        rgb, ms = self._get_inputs(batch)
+        
+        # Forward pass
+        output = self(rgb=rgb, ms=ms)
+        
+        # Handle aux loss outputs
+        if isinstance(output, tuple):
+            output = output[0]  # Use only main output for predictions
+            
+        # Get prediction mask
+        pred_mask = output.argmax(dim=1)
+        
+        # Return prediction and optionally other fields needed for visualization
+        result = {'pred': pred_mask}
+        
+        # Add original inputs for visualization if available
+        if 'rgb' in batch:
+            result['rgb'] = batch['rgb']
+        if 'ms' in batch:
+            result['ms'] = batch['ms']
+        if 'mask' in batch:
+            result['mask'] = batch['mask']
+            
+        return result
+    
+    def configure_optimizers(self):
+        # Define optimizer
+        optimizer = torch.optim.AdamW(
+            self.parameters(), 
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+        
+        # Define scheduler
+        scheduler = None
+        
+        if self.lr_scheduler == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, 
+                T_max=self.trainer.max_epochs - self.lr_warmup_epochs
+            )
+        elif self.lr_scheduler == 'step':
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=30,
+                gamma=0.1
+            )
+        elif self.lr_scheduler == 'poly':
+            def lambda_poly(epoch):
+                return (1 - epoch / self.trainer.max_epochs) ** 0.9
+                
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lr_lambda=lambda_poly
+            )
+            
+        # Add warmup scheduler if needed
+        if self.lr_warmup_epochs > 0:
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer, 
+                start_factor=0.1, 
+                end_factor=1.0, 
+                total_iters=self.lr_warmup_epochs
+            )
+            
+            # Combine schedulers
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, 
+                schedulers=[warmup_scheduler, scheduler], 
+                milestones=[self.lr_warmup_epochs]
+            )
+            
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+                "monitor": "val_loss"
+            }
+        }
+    
     def _load_pretrained_backbone(self, checkpoint_path):
         """Load weights from a PyTorch Lightning checkpoint file"""
         print(f"Loading checkpoint from {checkpoint_path}")
@@ -317,232 +544,9 @@ class MSRGBConvNeXtUPerNet(nn.Module):
             state_dict = checkpoint
         
         # Load weights to backbone
-        missing_keys, unexpected_keys = self.backbone_model.load_state_dict(state_dict, strict=False)
+        missing_keys, unexpected_keys = self.backbone.load_state_dict(state_dict, strict=False)
         
         if len(missing_keys) > 0:
             print(f"Missing keys: {missing_keys}")
         if len(unexpected_keys) > 0:
             print(f"Unexpected keys: {unexpected_keys}")
-
-
-class MSRGBConvNeXtUPerNetModule(pl.LightningModule):
-    """
-    PyTorch Lightning module for MSRGBConvNeXtUPerNet
-    """
-    def __init__(
-        self,
-        num_classes: int,
-        rgb_in_channels: int = 3,
-        ms_in_channels: int = 5,
-        model_size: str = 'tiny',
-        fusion_strategy: str = 'hierarchical',
-        fusion_type: str = 'attention',
-        learning_rate: float = 1e-4,
-        weight_decay: float = 1e-4,
-        use_aux_loss: bool = True,
-        aux_weight: float = 0.4,
-        class_weights: Optional[List[float]] = None,
-        pretrained_backbone: Optional[str] = None
-    ):
-        super(MSRGBConvNeXtUPerNetModule, self).__init__()
-        
-        # Create the model
-        self.model = MSRGBConvNeXtUPerNet(
-            num_classes=num_classes,
-            rgb_in_channels=rgb_in_channels,
-            ms_in_channels=ms_in_channels,
-            model_size=model_size,
-            fusion_strategy=fusion_strategy,
-            fusion_type=fusion_type,
-            use_aux_loss=use_aux_loss,
-            aux_weight=aux_weight,
-            pretrained_backbone=pretrained_backbone
-        )
-        
-        # Training parameters
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.use_aux_loss = use_aux_loss
-        self.aux_weight = aux_weight
-        
-        # Setup loss function with optional class weights
-        if class_weights is not None:
-            self.register_buffer('class_weights', torch.tensor(class_weights))
-            self.criterion = nn.CrossEntropyLoss(weight=self.class_weights)
-        else:
-            self.criterion = nn.CrossEntropyLoss()
-        
-        # Save hyperparameters for logging
-        self.save_hyperparameters(ignore=['model'])
-        
-    def forward(self, rgb=None, ms=None, return_aux=False):
-        return self.model(rgb=rgb, ms=ms, return_aux=return_aux)
-        
-    def training_step(self, batch, batch_idx):
-        # Extract inputs and target
-        rgb = batch.get('rgb')
-        ms = batch.get('ms')
-        target = batch['mask']
-        
-        # Forward pass
-        if self.use_aux_loss:
-            logits, aux_outputs = self(rgb=rgb, ms=ms, return_aux=True)
-            
-            # Main loss
-            main_loss = self.criterion(logits, target)
-            
-            # Auxiliary losses
-            aux_losses = 0
-            for aux_output in aux_outputs:
-                aux_losses += self.criterion(aux_output, target)
-            
-            # Combined loss
-            loss = main_loss + self.aux_weight * (aux_losses / len(aux_outputs))
-            
-            # Log components
-            self.log('train_main_loss', main_loss, on_step=True, on_epoch=True, prog_bar=True)
-            self.log('train_aux_loss', aux_losses / len(aux_outputs), on_step=True, on_epoch=True)
-        else:
-            logits = self(rgb=rgb, ms=ms)
-            loss = self.criterion(logits, target)
-        
-        # Log total loss
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        
-        return loss
-        
-    def validation_step(self, batch, batch_idx):
-        # Extract inputs and target
-        rgb = batch.get('rgb')
-        ms = batch.get('ms')
-        target = batch['mask']
-        
-        # Forward pass (no aux outputs during validation)
-        logits = self(rgb=rgb, ms=ms)
-        
-        # Calculate loss
-        loss = self.criterion(logits, target)
-        
-        # Log metrics
-        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        
-        # Calculate accuracy
-        preds = torch.argmax(logits, dim=1)
-        accuracy = (preds == target).float().mean()
-        self.log('val_accuracy', accuracy, on_step=False, on_epoch=True, prog_bar=True)
-        
-        # Calculate IoU for each class
-        iou_per_class = []
-        for cls in range(logits.shape[1]):
-            intersection = ((preds == cls) & (target == cls)).float().sum()
-            union = ((preds == cls) | (target == cls)).float().sum()
-            iou = intersection / (union + 1e-6)
-            iou_per_class.append(iou)
-            self.log(f'val_iou_class{cls}', iou, on_step=False, on_epoch=True)
-        
-        # Mean IoU
-        mean_iou = torch.stack(iou_per_class).mean()
-        self.log('val_mean_iou', mean_iou, on_step=False, on_epoch=True, prog_bar=True)
-        
-        return loss
-        
-    def configure_optimizers(self):
-        # Set up separate parameter groups with different learning rates if needed
-        backbone_params = []
-        head_params = []
-        
-        # Separate backbone and segmentation head parameters
-        for name, param in self.named_parameters():
-            if 'backbone' in name:
-                backbone_params.append(param)
-            else:
-                head_params.append(param)
-        
-        # Create optimizer with parameter groups
-        optimizer = torch.optim.AdamW([
-            {'params': backbone_params, 'lr': self.learning_rate * 0.1},  # Lower LR for backbone
-            {'params': head_params, 'lr': self.learning_rate}
-        ], weight_decay=self.weight_decay)
-        
-        # Create learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 
-            T_max=self.trainer.max_epochs
-        )
-        
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'monitor': 'val_loss',
-                'interval': 'epoch'
-            }
-        }
-    
-    def test_step(self, batch, batch_idx):
-        # Similar to validation_step but includes more comprehensive metrics
-        rgb = batch.get('rgb')
-        ms = batch.get('ms')
-        target = batch['mask']
-        
-        # Forward pass
-        logits = self(rgb=rgb, ms=ms)
-        
-        # Calculate loss
-        loss = self.criterion(logits, target)
-        
-        # Get predictions
-        preds = torch.argmax(logits, dim=1)
-        
-        # Calculate accuracy
-        accuracy = (preds == target).float().mean()
-        
-        # Calculate metrics for each class
-        num_classes = logits.shape[1]
-        metrics_per_class = []
-        
-        for c in range(num_classes):
-            # True positives, false positives, false negatives
-            true_pos = ((preds == c) & (target == c)).sum().float()
-            false_pos = ((preds == c) & (target != c)).sum().float()
-            false_neg = ((preds != c) & (target == c)).sum().float()
-            
-            # Calculate precision, recall, F1, IoU
-            precision = true_pos / (true_pos + false_pos + 1e-6)
-            recall = true_pos / (true_pos + false_neg + 1e-6)
-            f1 = 2 * precision * recall / (precision + recall + 1e-6)
-            iou = true_pos / (true_pos + false_pos + false_neg + 1e-6)
-            
-            metrics_per_class.append({
-                'precision': precision,
-                'recall': recall,
-                'f1': f1,
-                'iou': iou
-            })
-        
-        # Calculate mean metrics
-        mean_precision = torch.mean(torch.stack([m['precision'] for m in metrics_per_class]))
-        mean_recall = torch.mean(torch.stack([m['recall'] for m in metrics_per_class]))
-        mean_f1 = torch.mean(torch.stack([m['f1'] for m in metrics_per_class]))
-        mean_iou = torch.mean(torch.stack([m['iou'] for m in metrics_per_class]))
-        
-        # Log metrics
-        self.log('test_loss', loss)
-        self.log('test_accuracy', accuracy)
-        self.log('test_mean_precision', mean_precision)
-        self.log('test_mean_recall', mean_recall)
-        self.log('test_mean_f1', mean_f1)
-        self.log('test_mean_iou', mean_iou)
-        
-        for i, metrics in enumerate(metrics_per_class):
-            self.log(f'test_class{i}_precision', metrics['precision'])
-            self.log(f'test_class{i}_recall', metrics['recall'])
-            self.log(f'test_class{i}_f1', metrics['f1'])
-            self.log(f'test_class{i}_iou', metrics['iou'])
-        
-        return {
-            'test_loss': loss,
-            'test_accuracy': accuracy,
-            'metrics_per_class': metrics_per_class,
-            'mean_iou': mean_iou
-        }
