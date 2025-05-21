@@ -502,7 +502,6 @@ def instance_segmentation_collate_fn(batch):
     Args:
         batch: List of samples from the dataset
         
-        if s == 0.0:
     Returns:
         Batched data with images stacked and boxes as list of tensors
     """

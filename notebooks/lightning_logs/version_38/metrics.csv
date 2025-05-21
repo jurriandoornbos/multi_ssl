@@ -1,2 +1,0 @@
-epoch,step,train_box_loss_step,train_center_loss_step,train_instance_cls_loss_step,train_mask_loss_step,train_semantic_loss_step,train_total_loss_step
-0,0,138.63526916503906,0.6681507229804993,0.6847310066223145,0.6923460960388184,0.5832752585411072,141.26377868652344

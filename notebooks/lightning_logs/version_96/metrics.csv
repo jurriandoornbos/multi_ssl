@@ -1,5 +1,0 @@
-epoch,step,train/loss_box_reg_epoch,train/loss_box_reg_step,train/loss_classifier_epoch,train/loss_classifier_step,train/loss_mask_epoch,train/loss_mask_step,train/loss_objectness_epoch,train/loss_objectness_step,train/loss_rpn_box_reg_epoch,train/loss_rpn_box_reg_step,train/total_loss_epoch,train/total_loss_step
-0,0,,0.07657449692487717,,0.7737588286399841,,4.049874305725098,,0.010648999363183975,,0.3652876317501068,,5.276144027709961
-0,0,0.07657449692487717,,0.7737588286399841,,4.049874305725098,,0.010648999363183975,,0.3652876317501068,,5.276144027709961,
-1,1,,nan,,nan,,nan,,0.6931471824645996,,0.16247719526290894,,nan
-1,1,nan,,nan,,nan,,0.6931471824645996,,0.16247719526290894,,nan,

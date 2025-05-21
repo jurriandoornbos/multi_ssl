@@ -5,7 +5,10 @@ dataset
 notebooks/segmentation_checkpoints
 notebooks/vineseg_checkpoints
 notebooks/figs
-notebooks/*
+notebooks/roi_logs
+notebooks/lightning_logs
+notebooks/wandb/
+notebooks/tree_checkpoints
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
