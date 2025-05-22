@@ -10,3 +10,4 @@ from .msrgb_convnext import MSRGBConvNeXt
 from .msrgb_convnext_upernet import MSRGBConvNeXtUPerNet
 from .msrgb_convnext_instance import MSRGBInstanceModule
 from .pasiphae_upernet import PasiphaeUPerNetModule, PasiphaeUPerNet
+from .msrgb_convnext_semi import MSRGBConvNeXtUPerNetMixed

@@ -11,6 +11,7 @@ import random
 import torch
 from torchvision import transforms
 import cv2
+from typing import Union, Tuple, Optional
 
 class SafeGaussianBlur:
     def __init__(self, kernel_size=5):
@@ -361,7 +362,219 @@ class SafeGaussianNoise:
         
         # Return unchanged for any other type
         return img
+
+
+
+class ValidationTransform:
+    """
+    Validation transform for mixed supervision segmentation.
     
+    Applies only essential preprocessing without any augmentations:
+    - Resize to target size
+    - Convert to float [0, 1] range
+    - Convert to tensor format
+    - Transpose to CHW format
+    
+    This ensures consistent preprocessing between training and validation
+    while avoiding any data augmentation that could affect validation metrics.
+    """
+    
+    def __init__(self, img_size=224, in_channels=4):
+        """
+        Args:
+            img_size: Target image size (int or tuple)
+            in_channels: Number of input channels (for validation)
+        """
+        self.img_size = (img_size, img_size) if isinstance(img_size, int) else img_size
+        self.in_channels = in_channels
+        
+        # Initialize core transform components
+        self.uint_to_float = SafeUIntToFloat()
+        self.to_tensor = ToTensorSafe()
+        self.transpose = Transpose()
+        self.mask_transform = MaskTransform()
+    
+    def _resize_image(self, img, size):
+        """
+        Resize image using bilinear interpolation (same as training)
+        Uses the same logic as JointTransform._resize_img for consistency
+        """
+        if img.ndim == 2:  # For grayscale images, add channel dimension
+            img = img[:, :, np.newaxis]
+            
+        src_h, src_w = img.shape[:2]
+        target_h, target_w = size
+        
+        # Skip resize if already correct size
+        if src_h == target_h and src_w == target_w:
+            return img
+        
+        # Calculate ratios
+        h_ratio = src_h / target_h
+        w_ratio = src_w / target_w
+        
+        # Create coordinate grids
+        y_coords = np.arange(target_h).reshape(-1, 1) * h_ratio
+        x_coords = np.arange(target_w).reshape(1, -1) * w_ratio
+        
+        # Floor and ceiling coordinates
+        y0 = np.floor(y_coords).astype(np.int32)
+        y1 = np.minimum(y0 + 1, src_h - 1)
+        x0 = np.floor(x_coords).astype(np.int32)
+        x1 = np.minimum(x0 + 1, src_w - 1)
+        
+        # Calculate interpolation weights
+        y_weights = (y_coords - y0).astype(np.float32)
+        x_weights = (x_coords - x0).astype(np.float32)
+        
+        # Reshape for broadcasting
+        y_weights = y_weights.reshape(target_h, 1, 1)
+        x_weights = x_weights.reshape(1, target_w, 1)
+        
+        # Get values for the four corners
+        img_flat = img.reshape(-1, img.shape[2])
+        
+        # Calculate indices for the four corners
+        top_left_idx = y0 * src_w + x0
+        top_right_idx = y0 * src_w + x1
+        bottom_left_idx = y1 * src_w + x0
+        bottom_right_idx = y1 * src_w + x1
+        
+        # Get values for corners and reshape
+        top_left = img_flat[top_left_idx.flatten()].reshape(target_h, target_w, -1)
+        top_right = img_flat[top_right_idx.flatten()].reshape(target_h, target_w, -1)
+        bottom_left = img_flat[bottom_left_idx.flatten()].reshape(target_h, target_w, -1)
+        bottom_right = img_flat[bottom_right_idx.flatten()].reshape(target_h, target_w, -1)
+        
+        # Bilinear interpolation
+        top = top_left * (1 - x_weights) + top_right * x_weights
+        bottom = bottom_left * (1 - x_weights) + bottom_right * x_weights
+        result = top * (1 - y_weights) + bottom * y_weights
+        
+        # Handle single channel case
+        if result.shape[2] == 1:
+            result = result.squeeze(2)
+            
+        return result
+    
+    def _resize_mask(self, mask, size):
+        """
+        Resize mask using nearest neighbor interpolation (same as training)
+        Uses the same logic as JointTransform._resize_mask for consistency
+        """
+        src_h, src_w = mask.shape[:2]
+        target_h, target_w = size
+        
+        # Skip resize if already correct size
+        if src_h == target_h and src_w == target_w:
+            return mask
+        
+        # Calculate coordinates in the source image
+        y_ratio = src_h / target_h
+        x_ratio = src_w / target_w
+        
+        y_src = np.floor(np.arange(target_h) * y_ratio).astype(np.int32)
+        x_src = np.floor(np.arange(target_w) * x_ratio).astype(np.int32)
+        
+        # Ensure we don't go out of bounds
+        y_src = np.minimum(y_src, src_h - 1)
+        x_src = np.minimum(x_src, src_w - 1)
+        
+        # Use meshgrid to create 2D coordinate arrays
+        y_coords, x_coords = np.meshgrid(y_src, x_src, indexing='ij')
+        
+        # Index into the source mask
+        result = mask[y_coords, x_coords]
+        
+        return result
+    
+    def __call__(self, image, mask=None):
+        """
+        Apply validation transforms to image and optionally mask.
+        
+        Args:
+            image: Input image as numpy array
+            mask: Optional mask as numpy array
+            
+        Returns:
+            If mask is provided: (transformed_image, transformed_mask)
+            If mask is None: transformed_image
+        """
+        # Handle different input types
+        if isinstance(image, torch.Tensor):
+            image = image.cpu().numpy()
+            if image.dim() == 3 and image.shape[0] <= self.in_channels:  # CHW format
+                image = np.transpose(image, (1, 2, 0))  # Convert to HWC
+        
+        if mask is not None and isinstance(mask, torch.Tensor):
+            mask = mask.cpu().numpy()
+        
+        # Ensure image is in HWC format and proper data type
+        if image.ndim == 2:
+            image = image[:, :, np.newaxis]
+        elif image.ndim == 3 and image.shape[0] <= self.in_channels and image.shape[2] > self.in_channels:
+            # Likely CHW format, convert to HWC
+            image = np.transpose(image, (1, 2, 0))
+        
+        # Ensure float format for image
+        if image.dtype != np.float32 or image.max() > 1.0:
+            image = image.astype(np.float32)
+            if image.max() > 1.0:
+                image = image / 255.0
+        
+        # Resize image to target size
+        image_resized = self._resize_image(image, self.img_size)
+        
+        # Process mask if provided
+        if mask is not None:
+            # Ensure mask is in proper format
+            if mask.ndim > 2:
+                mask = mask[:, :, 0] if mask.shape[2] == 1 else mask
+            
+            # Resize mask to target size
+            mask_resized = self._resize_mask(mask, self.img_size)
+            
+            # Convert to tensors
+            image_tensor = self.to_tensor(self.transpose()(image_resized))
+            mask_tensor = self.mask_transform(mask_resized)
+            
+            return image_tensor, mask_tensor
+        else:
+            # Convert to tensor
+            image_tensor = self.to_tensor(self.transpose()(image_resized))
+            return image_tensor
+
+
+class ValidationJointTransform:
+    """
+    Joint validation transform that ensures both image and mask are processed consistently.
+    This is the recommended approach for validation in mixed supervision scenarios.
+    """
+    
+    def __init__(self, img_size=224, in_channels=4):
+        """
+        Args:
+            img_size: Target image size
+            in_channels: Number of input channels
+        """
+        self.img_size = (img_size, img_size) if isinstance(img_size, int) else img_size
+        self.in_channels = in_channels
+        self.validation_transform = ValidationTransform(img_size, in_channels)
+    
+    def __call__(self, image, mask):
+        """
+        Apply joint validation transforms.
+        
+        Args:
+            image: Input image
+            mask: Input mask (required for joint transform)
+            
+        Returns:
+            (transformed_image, transformed_mask)
+        """
+        return self.validation_transform(image, mask)
+
+
 class JointTransform:
     """
     Applies the same spatial transformations to both image and mask.
