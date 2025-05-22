@@ -255,7 +255,7 @@ class MSRGBConvNeXtUPerNet(pl.LightningModule):
         weight_decay: float = 1e-4,
         lr_scheduler: str = 'cosine',  # 'cosine', 'step', 'poly'
         lr_warmup_epochs: int = 5,
-        use_aux_loss: bool = True,
+        use_aux_loss: bool = False,
         aux_weight: float = 0.4,
         class_weights: Optional[torch.Tensor] = None,
         ignore_index: int = 255,
@@ -275,6 +275,7 @@ class MSRGBConvNeXtUPerNet(pl.LightningModule):
         self.use_aux_loss = use_aux_loss
         self.aux_weight = aux_weight
         self.upsample_output = upsample_output
+        self.ignore_index = ignore_index
         
 
         self.backbone = MSRGBConvNeXtFeatureExtractor(

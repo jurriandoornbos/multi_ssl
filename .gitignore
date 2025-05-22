@@ -8,7 +8,8 @@ notebooks/figs
 notebooks/roi_logs
 notebooks/lightning_logs
 notebooks/wandb/
-notebooks/tree_checkpoints
+notebooks/treeai_checkpoints/
+notebooks/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

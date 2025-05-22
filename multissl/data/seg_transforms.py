@@ -379,7 +379,7 @@ class ValidationTransform:
     while avoiding any data augmentation that could affect validation metrics.
     """
     
-    def __init__(self, img_size=224, in_channels=4):
+    def __init__(self, img_size=224, in_channels=3):
         """
         Args:
             img_size: Target image size (int or tuple)
@@ -535,13 +535,13 @@ class ValidationTransform:
             mask_resized = self._resize_mask(mask, self.img_size)
             
             # Convert to tensors
-            image_tensor = self.to_tensor(self.transpose()(image_resized))
+            image_tensor = self.to_tensor(self.transpose(image_resized))
             mask_tensor = self.mask_transform(mask_resized)
             
             return image_tensor, mask_tensor
         else:
             # Convert to tensor
-            image_tensor = self.to_tensor(self.transpose()(image_resized))
+            image_tensor = self.to_tensor(self.transpose(image_resized))
             return image_tensor
 
 
@@ -551,7 +551,7 @@ class ValidationJointTransform:
     This is the recommended approach for validation in mixed supervision scenarios.
     """
     
-    def __init__(self, img_size=224, in_channels=4):
+    def __init__(self, img_size=224, in_channels=3):
         """
         Args:
             img_size: Target image size

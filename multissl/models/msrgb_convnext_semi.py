@@ -29,7 +29,7 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         
         # Mixed supervision parameters
         full_supervision_weight=1.0,
-        partial_supervision_weight=0.5,
+        partial_supervision_weight=0.3,
         consistency_weight=0.1,
         use_consistency_loss=True,
         
@@ -63,7 +63,7 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         self.partial_criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
         
         # For consistency loss (comparing predictions from different augmentations)
-        self.consistency_criterion = nn.KLDivLoss(reduction='batchmean')
+        self.consistency_criterion = nn.KLDivLoss(reduction='mean')
         
     def compute_mixed_supervision_loss(
         self, 
@@ -163,9 +163,12 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         
         # Forward pass
         outputs = self(rgb=rgb, ms=ms)
+
+        if torch.isnan(outputs).any():
+            print("Model outputs contain NaNs!")
         
         # Handle auxiliary loss if present
-        if isinstance(outputs, tuple):
+        if self.use_aux_loss:
             main_outputs, aux_outputs = outputs
             
             # Compute main loss
@@ -218,7 +221,7 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         outputs = self(rgb=rgb, ms=ms)
         
         # Handle auxiliary loss if present
-        if isinstance(outputs, tuple):
+        if self.use_aux_loss:
             outputs = outputs[0]  # Use main output for validation
         
         # Compute losses
@@ -232,7 +235,7 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         metrics = self.compute_and_log_metrics(outputs, masks, batch, prefix='val_')
         
         # Plot validation results periodically
-        if batch_idx == 0 and self.current_epoch % 5 == 0:  # Plot every 5 epochs for first batch
+        if batch_idx == 0: # Plot every 5 epochs for first batch
             try:
                 
                 # Create validation plot

@@ -211,32 +211,34 @@ class MixedSupervisionSegmentationDataset(Dataset):
     
     def _process_partial_mask(self, mask: np.ndarray) -> np.ndarray:
         """
-        Process partially labeled mask by setting unlabeled regions to ignore_index
+        Use morphological operations to identify uncertain regions.
         
-        For partial supervision, we assume:
-        - Labeled objects have their correct class (0, 1, 2, ...)
-        - Unlabeled regions that should be ignored are set to ignore_index (255)
-        
-        If your partial masks don't already have ignore_index values, you might need
-        to implement logic here to identify unlabeled regions.
+        Regions that are neither clearly background nor clearly foreground
+        are marked as ignore regions.
         """
+        import cv2
+        
         processed_mask = mask.copy()
         
-        # Example processing: you might want to randomly mask out some labeled regions
-        # to simulate partial labeling during training (data augmentation)
-        if random.random() < 0.1:  # 10% chance to add artificial partial labeling
-            # Randomly set some labeled pixels to ignore_index
-            labeled_pixels = (mask > 0) & (mask < self.ignore_index)
-            if labeled_pixels.sum() > 0:
-                # Randomly select 20% of labeled pixels to ignore
-                labeled_coords = np.where(labeled_pixels)
-                num_to_ignore = int(len(labeled_coords[0]) * 0.2)
-                if num_to_ignore > 0:
-                    ignore_indices = np.random.choice(len(labeled_coords[0]), 
-                                                    size=num_to_ignore, 
-                                                    replace=False)
-                    processed_mask[labeled_coords[0][ignore_indices], 
-                                 labeled_coords[1][ignore_indices]] = self.ignore_index
+        # Create binary masks for foreground and background
+        foreground_mask = (mask > 0)
+        unlabeled_mask = (mask == 0)
+        
+        # Apply morphological operations to identify certain regions
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        
+        # Erode foreground to get "definitely foreground" regions
+        certain_foreground = cv2.erode(foreground_mask.astype(np.uint8), kernel, iterations=1)
+        
+        # Dilate foreground to get "possibly foreground" regions
+        possible_foreground = cv2.dilate(foreground_mask.astype(np.uint8), kernel, iterations=2)
+        
+          # Regions that are neither certain foreground nor certain background become ignore
+        uncertain_regions = ~(certain_foreground.astype(bool))
+                
+        # Set uncertain regions to ignore_index
+        processed_mask[uncertain_regions] = self.ignore_index
+        processed_mask[unlabeled_mask] = self.ignore_index
         
         return processed_mask
     
