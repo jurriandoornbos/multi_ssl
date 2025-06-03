@@ -4,15 +4,13 @@ import torch.nn.functional as F
 from typing import List, Optional, Tuple, Union, Dict
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
-    """
-    Drop paths (Stochastic Depth) per sample when applied in main path of residual blocks.
-    """
+    """Drop paths (Stochastic Depth) per sample when applied in main path of residual blocks."""
     if drop_prob == 0. or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
     random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-    random_tensor.floor_()  # binarize
+    random_tensor.floor_()
     output = x.div(keep_prob) * random_tensor
     return output
 
@@ -26,9 +24,7 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
 class ConvNeXtBlock(nn.Module):
-    """
-    ConvNeXt Block with depthwise/pointwise convolutions and layer scaling
-    """
+    """ConvNeXt Block with depthwise/pointwise convolutions and layer scaling"""
     def __init__(
         self, 
         dim: int, 
@@ -36,9 +32,9 @@ class ConvNeXtBlock(nn.Module):
         layer_scale_init_value: float = 1e-6
     ):
         super().__init__()
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)  # depthwise conv
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
         self.norm = nn.LayerNorm(dim)
-        self.pwconv1 = nn.Linear(dim, 4 * dim)  # pointwise/1x1 convs, implemented with linear layers
+        self.pwconv1 = nn.Linear(dim, 4 * dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
         self.gamma = nn.Parameter(layer_scale_init_value * torch.ones(dim), 
@@ -56,16 +52,15 @@ class ConvNeXtBlock(nn.Module):
         if self.gamma is not None:
             x = self.gamma * x
         x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
-
         x = input + self.drop_path(x)
         return x
 
 class ConvNeXtDownsample(nn.Module):
     """Downsampling layer for ConvNeXt"""
-    def __init__(self, in_channels, out_channels, norm_layer=nn.LayerNorm):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=2, stride=2)
-        self.norm = norm_layer(out_channels)
+        self.norm = nn.LayerNorm(out_channels)
         
     def forward(self, x):
         x = self.conv(x)
@@ -74,139 +69,257 @@ class ConvNeXtDownsample(nn.Module):
         x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
         return x
 
-class ModalityFusion(nn.Module):
-    """Fusion module to combine features from RGB and MS streams"""
-    def __init__(self, dim, fusion_type='concat'):
+class ModalityAdapter(nn.Module):
+    """
+    Learned adapter that converts modality-specific features to shared representation.
+    Enables cross-modal knowledge transfer even when only one modality is present.
+    """
+    def __init__(self, shared_dim: int, use_residual: bool = True):
         super().__init__()
-        self.fusion_type = fusion_type
+        self.shared_dim = shared_dim
+        self.use_residual = use_residual
         
-        if fusion_type == 'concat':
-            self.fusion = nn.Sequential(
-                nn.Conv2d(dim * 2, dim, kernel_size=1),
-                nn.BatchNorm2d(dim),
-                nn.GELU()
-            )
-        elif fusion_type == 'add':
-            self.fusion_rgb = nn.Conv2d(dim, dim, kernel_size=1)
-            self.fusion_ms = nn.Conv2d(dim, dim, kernel_size=1)
-        elif fusion_type == 'attention':
-            self.query = nn.Conv2d(dim, dim, kernel_size=1)
-            self.key = nn.Conv2d(dim, dim, kernel_size=1)
-            self.value = nn.Conv2d(dim, dim, kernel_size=1)
-            self.fusion = nn.Conv2d(dim, dim, kernel_size=1)
-        else:
-            raise ValueError(f"Unknown fusion type: {fusion_type}")
-    
-    def forward(self, rgb_feat, ms_feat):
-        if self.fusion_type == 'concat':
-            fused = torch.cat([rgb_feat, ms_feat], dim=1)
-            return self.fusion(fused)
-        elif self.fusion_type == 'add':
-            return self.fusion_rgb(rgb_feat) + self.fusion_ms(ms_feat)
-        elif self.fusion_type == 'attention':
-            # Cross-attention between RGB and MS features
-            q = self.query(rgb_feat)
-            k = self.key(ms_feat)
-            v = self.value(ms_feat)
+        # RGB to shared representation adapter
+        self.rgb_adapter = nn.Sequential(
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=1),
+            nn.BatchNorm2d(shared_dim),
+            nn.GELU(),
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(shared_dim)
+        )
+        
+        # MS to shared representation adapter
+        self.ms_adapter = nn.Sequential(
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=1),
+            nn.BatchNorm2d(shared_dim),
+            nn.GELU(),
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(shared_dim)
+        )
+        
+        # Cross-modal hallucination/completion modules using efficient convolutions
+        # These learn to "imagine" the missing modality from the present one
+        self.rgb_to_ms_hallucinator = nn.Sequential(
+            # Depthwise separable convolution for efficiency
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=3, padding=1, groups=shared_dim),  # Depthwise
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=1),  # Pointwise
+            nn.BatchNorm2d(shared_dim),
+            nn.GELU(),
+            # Feature transformation with channel mixing
+            nn.Conv2d(shared_dim, shared_dim // 2, kernel_size=1),
+            nn.BatchNorm2d(shared_dim // 2),
+            nn.GELU(),
+            nn.Conv2d(shared_dim // 2, shared_dim, kernel_size=1),
+            nn.BatchNorm2d(shared_dim)
+        )
+        
+        self.ms_to_rgb_hallucinator = nn.Sequential(
+            # Depthwise separable convolution for efficiency
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=3, padding=1, groups=shared_dim),  # Depthwise
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=1),  # Pointwise
+            nn.BatchNorm2d(shared_dim),
+            nn.GELU(),
+            # Feature transformation with channel mixing
+            nn.Conv2d(shared_dim, shared_dim // 2, kernel_size=1),
+            nn.BatchNorm2d(shared_dim // 2),
+            nn.GELU(),
+            nn.Conv2d(shared_dim // 2, shared_dim, kernel_size=1),
+            nn.BatchNorm2d(shared_dim)
+        )
+        
+        # Cross-modal fusion using efficient channel attention
+        self.cross_fusion = ChannelCrossModalFusion(shared_dim)
+        
+        # Confidence weighting for hallucinated features
+        self.hallucination_gate = nn.Sequential(
+            nn.Conv2d(shared_dim, shared_dim // 4, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(shared_dim // 4, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # Final projection
+        self.output_proj = nn.Sequential(
+            nn.Conv2d(shared_dim, shared_dim, kernel_size=1),
+            nn.BatchNorm2d(shared_dim)
+        )
+        
+    def forward(self, rgb_feat=None, ms_feat=None):
+        """
+        Adapt modality features to shared representation with cross-modal knowledge transfer
+        
+        Args:
+            rgb_feat: RGB features or None
+            ms_feat: MS features or None
             
-            # Reshape for attention
-            b, c, h, w = q.shape
-            q = q.view(b, c, -1).permute(0, 2, 1)  # B, HW, C
-            k = k.view(b, c, -1)  # B, C, HW
-            v = v.view(b, c, -1).permute(0, 2, 1)  # B, HW, C
+        Returns:
+            Shared representation tensor
+        """
+        if rgb_feat is None and ms_feat is None:
+            raise ValueError("At least one modality must be provided")
+        
+        # Case 1: Both modalities present - standard cross-modal attention
+        if rgb_feat is not None and ms_feat is not None:
+            rgb_adapted = self.rgb_adapter(rgb_feat)
+            if self.use_residual:
+                rgb_adapted = rgb_adapted + rgb_feat
+                
+            ms_adapted = self.ms_adapter(ms_feat)
+            if self.use_residual:
+                ms_adapted = ms_adapted + ms_feat
             
-            # Scaled dot-product attention
-            attn = F.softmax(torch.bmm(q, k) / (c ** 0.5), dim=-1)
-            out = torch.bmm(attn, v).permute(0, 2, 1).view(b, c, h, w)
+            output = self.cross_fusion(rgb_adapted, ms_adapted)
+        
+        # Case 2: Only RGB present - hallucinate MS features
+        elif rgb_feat is not None:
+            rgb_adapted = self.rgb_adapter(rgb_feat)
+            if self.use_residual:
+                rgb_adapted = rgb_adapted + rgb_feat
             
-            return self.fusion(out)
+            # Hallucinate MS features from RGB
+            hallucinated_ms = self.rgb_to_ms_hallucinator(rgb_adapted)
+            
+            # Generate confidence score for hallucinated features
+            confidence = self.hallucination_gate(rgb_adapted)
+            hallucinated_ms = hallucinated_ms * confidence
+            
+            # Apply cross-modal fusion with hallucinated MS features
+            output = self.cross_fusion(rgb_adapted, hallucinated_ms)
+        
+        # Case 3: Only MS present - hallucinate RGB features
+        else:  # ms_feat is not None
+            ms_adapted = self.ms_adapter(ms_feat)
+            if self.use_residual:
+                ms_adapted = ms_adapted + ms_feat
+            
+            # Hallucinate RGB features from MS  
+            hallucinated_rgb = self.ms_to_rgb_hallucinator(ms_adapted)
+            
+            # Generate confidence score for hallucinated features
+            confidence = self.hallucination_gate(ms_adapted)
+            hallucinated_rgb = hallucinated_rgb * confidence
+            
+            # Apply cross-modal fusion with hallucinated RGB features
+            output = self.cross_fusion(hallucinated_rgb, ms_adapted)
+        
+        return self.output_proj(output)
 
-class DualModalityStem(nn.Module):
+class ChannelCrossModalFusion(nn.Module):
     """
-    Stem module that processes RGB and MS inputs separately with optional early fusion
+    Lightweight channel-wise cross-modal fusion
+    O(C) complexity instead of O(H²W²) attention
     """
-    def __init__(
-        self, 
-        rgb_in_channels=3, 
-        ms_in_channels=5, 
-        out_channels=96, 
-        fusion_type='concat',
-        early_fusion=True
-    ):
+    def __init__(self, dim: int):
         super().__init__()
-        self.early_fusion = early_fusion
+        self.dim = dim
         
-        # RGB stem
+        # Channel-wise attention - much lighter than spatial attention
+        self.rgb_channel_attn = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),  # Global average pooling: B,C,H,W -> B,C,1,1
+            nn.Conv2d(dim, dim // 8, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(dim // 8, dim, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        self.ms_channel_attn = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(dim, dim // 8, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(dim // 8, dim, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # Final output projection
+        self.output_proj = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=1),
+            nn.BatchNorm2d(dim)
+        )
+        
+    def forward(self, rgb_feat, ms_feat):
+        """
+        Channel attention fusion - each modality guides the other's channel importance
+        
+        Args:
+            rgb_feat: RGB features [B, C, H, W]
+            ms_feat: MS features [B, C, H, W]
+            
+        Returns:
+            Fused features [B, C, H, W]
+        """
+        # MS features guide RGB channel attention
+        rgb_weights = self.rgb_channel_attn(ms_feat)  # B, C, 1, 1
+        rgb_enhanced = rgb_feat * rgb_weights  # Broadcast multiply
+        
+        # RGB features guide MS channel attention  
+        ms_weights = self.ms_channel_attn(rgb_feat)  # B, C, 1, 1
+        ms_enhanced = ms_feat * ms_weights  # Broadcast multiply
+        
+        # Simple addition fusion
+        fused = rgb_enhanced + ms_enhanced
+        
+        return self.output_proj(fused)
+
+class AdaptiveStem(nn.Module):
+    """
+    Adaptive stem that converts different input modalities to shared representation
+    """
+    def __init__(self, rgb_in_channels=3, ms_in_channels=5, shared_dim=96):
+        super().__init__()
+        self.shared_dim = shared_dim
+        
+        # Separate stems for each modality
         self.rgb_stem = nn.Sequential(
-            nn.Conv2d(rgb_in_channels, out_channels, kernel_size=4, stride=4),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(rgb_in_channels, shared_dim, kernel_size=4, stride=4),
+            nn.BatchNorm2d(shared_dim),
             nn.GELU()
         )
         
-        # MS stem - handle variable channel counts
         self.ms_stem = nn.Sequential(
-            nn.Conv2d(ms_in_channels, out_channels, kernel_size=4, stride=4),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(ms_in_channels, shared_dim, kernel_size=4, stride=4),
+            nn.BatchNorm2d(shared_dim),
             nn.GELU()
         )
         
-        # Fusion module to combine RGB and MS features if using early fusion
-        if early_fusion:
-            self.fusion = ModalityFusion(out_channels, fusion_type)
+        # Modality adapter for fusion
+        self.adapter = ModalityAdapter(shared_dim)
         
     def forward(self, rgb=None, ms=None):
-        # Process available inputs
-        rgb_features = self.rgb_stem(rgb) if rgb is not None else None
-        ms_features = self.ms_stem(ms) if ms is not None else None
+        """
+        Process inputs through stems and adapt to shared representation
+        """
+        rgb_feat = self.rgb_stem(rgb) if rgb is not None else None
+        ms_feat = self.ms_stem(ms) if ms is not None else None
         
-        # Fusion based on available inputs and early_fusion setting
-        if self.early_fusion and rgb_features is not None and ms_features is not None:
-            # Apply fusion
-            fused = self.fusion(rgb_features, ms_features)
-            return fused, {'rgb': rgb_features, 'ms': ms_features, 'fused': fused}
-        elif rgb_features is not None and ms_features is not None:
-            # No early fusion, but keep both streams
-            return None, {'rgb': rgb_features, 'ms': ms_features}
-        elif rgb_features is not None:
-            # Only RGB available
-            return rgb_features, {'rgb': rgb_features, 'ms': None}
-        elif ms_features is not None:
-            # Only MS available
-            return ms_features, {'rgb': None, 'ms': ms_features}
-        else:
-            raise ValueError("At least one of RGB or MS input must be provided")
+        # Adapt to shared representation
+        shared_feat = self.adapter(rgb_feat, ms_feat)
+        
+        return shared_feat
 
 class ConvNeXtStage(nn.Module):
-    """
-    ConvNeXt stage with optional fusion between RGB and MS streams
-    """
+    """ConvNeXt stage with hierarchical fusion using direct cross-modal operations"""
     def __init__(
         self, 
-        dim: int, 
+        in_dim: int, 
         out_dim: int,
         depth: int, 
         drop_paths: List[float], 
         layer_scale_init_value: float = 1e-6,
         downsample: bool = True,
-        apply_fusion: bool = False,
-        fusion_type: str = 'concat',
-        fusion_interval: int = 1  # Fuse every N blocks
+        fusion_interval: int = 2
     ):
         super().__init__()
-        self.dim = dim
-        self.out_dim = out_dim
-        self.apply_fusion = apply_fusion
+        self.depth = depth
         self.fusion_interval = fusion_interval
         
-        # Downsampling layer
+        # Downsampling
         if downsample:
-            self.downsample = ConvNeXtDownsample(dim, out_dim)
+            self.downsample = ConvNeXtDownsample(in_dim, out_dim)
         else:
-            self.downsample = nn.Identity() if dim == out_dim else nn.Conv2d(dim, out_dim, kernel_size=1)
+            self.downsample = nn.Identity() if in_dim == out_dim else nn.Conv2d(in_dim, out_dim, kernel_size=1)
         
-        # Process streams separately if not using only fused path
-        # RGB stream
-        self.rgb_blocks = nn.ModuleList([
+        # Main processing blocks
+        self.blocks = nn.ModuleList([
             ConvNeXtBlock(
                 dim=out_dim,
                 drop_path=drop_paths[i],
@@ -214,90 +327,35 @@ class ConvNeXtStage(nn.Module):
             ) for i in range(depth)
         ])
         
-        # MS stream
-        self.ms_blocks = nn.ModuleList([
-            ConvNeXtBlock(
-                dim=out_dim,
-                drop_path=drop_paths[i],
-                layer_scale_init_value=layer_scale_init_value
-            ) for i in range(depth)
+        # Direct fusion modules (no adapter needed)
+        self.fusion_modules = nn.ModuleList([
+            ChannelCrossModalFusion(out_dim)
+            for _ in range(depth // fusion_interval)
         ])
         
-        # Fused stream (if using fusion)
-        self.fused_blocks = nn.ModuleList([
-            ConvNeXtBlock(
-                dim=out_dim,
-                drop_path=drop_paths[i],
-                layer_scale_init_value=layer_scale_init_value
-            ) for i in range(depth)
-        ])
-        
-        # Fusion modules
-        if apply_fusion:
-            self.fusion_layers = nn.ModuleList([
-                ModalityFusion(out_dim, fusion_type) 
-                for _ in range(depth // fusion_interval)
-            ])
-    
-    def forward(self, x=None, modality_features=None):
+    def forward(self, shared_feat):
         """
-        Forward pass for the stage
+        Simplified forward pass - just process the shared representation
         
         Args:
-            x: Current fused features or None if using separate streams
-            modality_features: Dict containing separate RGB and MS streams
+            shared_feat: Current shared representation
         """
-        # Apply downsampling to all streams
-        if x is not None:
-            x = self.downsample(x)
+        # Apply downsampling
+        shared_feat = self.downsample(shared_feat)
         
-        rgb_feat = modality_features.get('rgb')
-        ms_feat = modality_features.get('ms')
-        
-        if rgb_feat is not None:
-            rgb_feat = self.downsample(rgb_feat)
-        
-        if ms_feat is not None:
-            ms_feat = self.downsample(ms_feat)
-        
-        # Process through blocks with optional fusion
-        fusion_idx = 0
-        for i in range(len(self.rgb_blocks)):
-            # Process each stream independently
-            if rgb_feat is not None:
-                rgb_feat = self.rgb_blocks[i](rgb_feat)
+        # Process through blocks 
+        for i, block in enumerate(self.blocks):
+            shared_feat = block(shared_feat)
             
-            if ms_feat is not None:
-                ms_feat = self.ms_blocks[i](ms_feat)
-            
-            if x is not None:
-                x = self.fused_blocks[i](x)
-            
-            # Apply fusion if needed
-            if self.apply_fusion and (i + 1) % self.fusion_interval == 0:
-                if rgb_feat is not None and ms_feat is not None:
-                    fused = self.fusion_layers[fusion_idx](rgb_feat, ms_feat)
-                    fusion_idx += 1
-                    
-                    if x is None:
-                        # First fusion
-                        x = fused
-                    else:
-                        # Update fused stream
-                        x = fused
+            # Note: Hierarchical fusion would happen here if we had separate streams
+            # But since we already have shared representation, we just continue processing
         
-        # Update modality features
-        modality_features = {
-            'rgb': rgb_feat,
-            'ms': ms_feat,
-            'fused': x
-        }
-        
-        return x, modality_features
+        return shared_feat
 
 class MSRGBConvNeXt(nn.Module):
     """
-    ConvNeXt model with dual MS+RGB modality inputs and configurable fusion strategy
+    Simplified ConvNeXt with learned adapters for MS+RGB inputs
+    Uses only hierarchical fusion with attention
     """
     def __init__(
         self,
@@ -307,81 +365,50 @@ class MSRGBConvNeXt(nn.Module):
         dims: List[int] = [96, 192, 384, 768],
         drop_path_rate: float = 0.,
         layer_scale_init_value: float = 1e-6,
-        fusion_strategy: str = 'hierarchical',  # 'early', 'late', 'hierarchical', 'none'
-        fusion_type: str = 'attention',  # 'concat', 'add', 'attention'
         out_indices: List[int] = [0, 1, 2, 3],
     ):
         super().__init__()
         self.depths = depths
-        self.fusion_strategy = fusion_strategy
         self.out_indices = out_indices
         
-        # Stochastic depth decay rule
+        # Stochastic depth decay
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
         
-        # Stem with early fusion option
-        self.stem = DualModalityStem(
+        # Adaptive stem
+        self.stem = AdaptiveStem(
             rgb_in_channels=rgb_in_channels,
             ms_in_channels=ms_in_channels,
-            out_channels=dims[0],
-            fusion_type=fusion_type,
-            early_fusion=(fusion_strategy == 'early')
+            shared_dim=dims[0]
         )
-        
-        # Configure fusion for stages based on strategy 
-        stage_fusion = [False, False, False, False]
-        
-        if fusion_strategy == 'early':
-            # Only fuse at the stem, keep streams separate in stages
-            stage_fusion = [False, False, False, False]
-        elif fusion_strategy == 'late':
-            # Only fuse at the final stage
-            stage_fusion = [False, False, False, True]
-        elif fusion_strategy == 'hierarchical':
-            # Fuse at every stage
-            stage_fusion = [True, True, True, True]
-        elif fusion_strategy == 'progressive':
-            # Gradually increase fusion
-            stage_fusion = [False, True, True, True]
         
         # Build stages
         self.stages = nn.ModuleList()
         curr_idx = 0
         
         for i in range(len(depths)):
-            # Define input and output dimensions
-            if i == 0:
-                in_dim = dims[0]
-            else:
-                in_dim = dims[i-1]
-            
+            in_dim = dims[i-1] if i > 0 else dims[0]
             out_dim = dims[i]
             
-            # Collect drop paths for this stage
             stage_dpr = dpr[curr_idx:curr_idx + depths[i]]
             curr_idx += depths[i]
             
-            # Create stage
             stage = ConvNeXtStage(
-                dim=in_dim,
+                in_dim=in_dim,
                 out_dim=out_dim,
                 depth=depths[i],
                 drop_paths=stage_dpr,
                 layer_scale_init_value=layer_scale_init_value,
-                downsample=(i > 0),  # No downsampling for first stage
-                apply_fusion=stage_fusion[i],
-                fusion_type=fusion_type,
-                fusion_interval=2  # Fuse every 2 blocks for efficiency
+                downsample=(i > 0),
+                fusion_interval=2
             )
             
             self.stages.append(stage)
         
-        # Normalization for feature maps
+        # Output normalization
         self.norms = nn.ModuleList([
             nn.LayerNorm(dims[i]) for i in out_indices
         ])
         
-        # Initialize weights
         self.apply(self._init_weights)
         
     def _init_weights(self, m):
@@ -390,70 +417,42 @@ class MSRGBConvNeXt(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
                 
-
-    def forward_features(self, rgb=None, ms=None):
-        """
-        Forward pass through the feature extraction layers
-        """
-        # Initial stem processing
-        x, modality_features = self.stem(rgb=rgb, ms=ms)
+    def forward(self, rgb=None, ms=None):
+        """Forward pass through the network"""
+        # Process through adaptive stem (handles all fusion logic)
+        x = self.stem(rgb=rgb, ms=ms)
         
-        # Store outputs from each stage
+        # Collect outputs
         outs = []
         
-        # Process through stages
         for i, stage in enumerate(self.stages):
-            # Forward through stage
-            x, modality_features = stage(x, modality_features)
+            x = stage(x)
             
-            # Collect features from appropriate stream
             if i in self.out_indices:
-                # Correctly select features based on availability
-                # Fix: Use explicit conditional checks instead of boolean operators on tensors
-                if 'fused' in modality_features and modality_features['fused'] is not None:
-                    feat = modality_features['fused']
-                elif 'rgb' in modality_features and modality_features['rgb'] is not None:
-                    feat = modality_features['rgb']
-                elif 'ms' in modality_features and modality_features['ms'] is not None:
-                    feat = modality_features['ms']
-                else:
-                    feat = None
-                
-                if feat is not None:
-                    # Apply norm
-                    feat_norm = feat.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
-                    feat_norm = self.norms[self.out_indices.index(i)](feat_norm)
-                    feat_norm = feat_norm.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
-                    outs.append(feat_norm)
+                # Apply normalization
+                feat_norm = x.permute(0, 2, 3, 1)
+                feat_norm = self.norms[self.out_indices.index(i)](feat_norm)
+                feat_norm = feat_norm.permute(0, 3, 1, 2)
+                outs.append(feat_norm)
         
         return outs
-    
-    def forward(self, rgb=None, ms=None):
-        """Forward pass"""
-        return self.forward_features(rgb=rgb, ms=ms)
-    
+
 class MSRGBConvNeXtFeatureExtractor(nn.Module):
-    """
-    Feature extractor based on ConvNeXt for semantic segmentation tasks
-    with RGB and MS input support
-    """
+    """Feature extractor wrapper for semantic segmentation tasks"""
     def __init__(
         self,
-        model_name: str = 'tiny',  # 'tiny', 'small', 'base', 'large'
+        model_name: str = 'tiny',
         rgb_in_channels: int = 3,
         ms_in_channels: int = 5,
-        fusion_strategy: str = 'hierarchical',
-        fusion_type: str = 'attention',
         drop_path_rate: float = 0.1,
         **kwargs
     ):
         super().__init__()
         
-        # Model configurations
         model_configs = {
             'nano': {
-                 "depths": [2, 2, 6, 2],  # Reduced depths
-                 "dims":[48, 96, 192, 384],  # Reduced width
+                'depths': [2, 2, 6, 2],
+                'dims': [48, 96, 192, 384],
             },
             'tiny': {
                 'depths': [3, 3, 9, 3],
@@ -477,39 +476,27 @@ class MSRGBConvNeXtFeatureExtractor(nn.Module):
         if not config:
             raise ValueError(f"Unknown model size: {model_name}")
         
-        # Create backbone
         self.backbone = MSRGBConvNeXt(
             rgb_in_channels=rgb_in_channels,
             ms_in_channels=ms_in_channels,
             depths=config['depths'],
             dims=config['dims'],
-            fusion_strategy=fusion_strategy,
-            fusion_type=fusion_type,
             drop_path_rate=drop_path_rate,
             **kwargs
         )
         
-        # Store feature dimensions for segmentation heads
         self.feature_dims = {
             f'layer{i+1}': config['dims'][i] for i in range(len(config['dims']))
         }
     
     def forward(self, rgb=None, ms=None):
-        """
-        Forward pass with support for dual modality inputs
-        
-        Returns:
-            Dictionary of features compatible with segmentation heads
-        """
-        # Extract multi-scale features
+        """Forward pass returning feature dictionary"""
         features = self.backbone(rgb=rgb, ms=ms)
         
-        # Create feature dictionary for compatibility with segmentation heads
         feature_dict = {
             f'layer{i+1}': features[i] for i in range(len(features))
         }
         
-        # Add a flat representation for global features
         if features:
             global_feat = F.adaptive_avg_pool2d(features[-1], (1, 1))
             feature_dict['flat'] = global_feat.squeeze(-1).squeeze(-1)

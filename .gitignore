@@ -10,7 +10,8 @@ notebooks/lightning_logs
 notebooks/wandb/
 notebooks/treeai_checkpoints/
 notebooks/*.png
-
+roi_logs
+saved_images
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

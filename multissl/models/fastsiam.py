@@ -172,9 +172,15 @@ class FastSiam(pl.LightningModule):
             self.using_pasiphae = False
             
         elif backbone == "pasiphae":
-            self.backbone =  MSRGBConvNeXtFeatureExtractor(
-                model_name = "tiny")
-            backbone_dim = 768 # output dim for convnext tiny   
+            model_name = "tiny"
+            if model_name =="tiny":
+                self.backbone =  MSRGBConvNeXtFeatureExtractor(
+                    model_name = model_name)
+                backbone_dim = 768 
+            elif model_name =="nano":
+                self.backbone =  MSRGBConvNeXtFeatureExtractor(
+                    model_name = model_name)
+                backbone_dim = 384   
             self.using_vit = False
             self.using_pasiphae = True
 

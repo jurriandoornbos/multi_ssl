@@ -8,9 +8,69 @@ import numpy as np
 
 from .msrgb_convnext_upernet import MSRGBConvNeXtUPerNet
 
-from ..plotting.semi_plots import plot_mixed_supervision_validation, plot_supervision_statistics
+from multissl.plotting.semi_plots import plot_mixed_supervision_validation, plot_supervision_statistics
 import matplotlib.pyplot as plt
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss implementation as a drop-in replacement for nn.CrossEntropyLoss.
+    
+    Args:
+        alpha (float or tensor): Weighting factor for rare class (default: 1.0)
+        gamma (float): Focusing parameter to down-weight easy examples (default: 2.0)
+        reduction (str): Specifies the reduction to apply to the output:
+            'none' | 'mean' | 'sum'. Default: 'mean'
+        ignore_index (int): Specifies a target value that is ignored and does not
+            contribute to the input gradient. Default: -100
+    """
+    
+    def __init__(self, alpha=1.0, gamma=2.0, reduction='mean', ignore_index=-100):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+        
+    def forward(self, inputs, targets):
+        """
+        Args:
+            inputs: Tensor of shape (N, C) where N is batch size and C is number of classes
+            targets: Tensor of shape (N,) containing class indices
+            
+        Returns:
+            Focal loss value
+        """
+        # Compute cross entropy
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+        
+        # Compute probabilities
+        pt = torch.exp(-ce_loss)
+        
+        # Apply alpha weighting
+        if isinstance(self.alpha, (float, int)):
+            alpha_t = self.alpha
+        else:
+            alpha_t = self.alpha.gather(0, targets)
+            
+        # Compute focal loss
+        focal_loss = alpha_t * (1 - pt) ** self.gamma * ce_loss
+        
+        # Handle ignore_index
+        if self.ignore_index >= 0:
+            mask = targets != self.ignore_index
+            focal_loss = focal_loss * mask
+        
+        # Apply reduction
+        if self.reduction == 'mean':
+            if self.ignore_index >= 0:
+                return focal_loss.sum() / mask.sum()
+            else:
+                return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:  # 'none'
+            return focal_loss
+        
 class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
     """
     UPerNet model extended to handle mixed supervision training.
@@ -59,8 +119,8 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         self.use_consistency_loss = use_consistency_loss
         
         # Create separate loss functions for different supervision types
-        self.full_criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
-        self.partial_criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        self.full_criterion = FocalLoss(ignore_index=ignore_index)
+        self.partial_criterion = FocalLoss(ignore_index=ignore_index)
         
         # For consistency loss (comparing predictions from different augmentations)
         self.consistency_criterion = nn.KLDivLoss(reduction='mean')

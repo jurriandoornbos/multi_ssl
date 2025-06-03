@@ -248,8 +248,6 @@ class MSRGBConvNeXtUPerNet(pl.LightningModule):
         rgb_in_channels=3,
         ms_in_channels=5,
         num_classes=2,
-        fusion_strategy='hierarchical',
-        fusion_type='attention',
         drop_path_rate=0.0,
         learning_rate: float = 1e-4,
         weight_decay: float = 1e-4,
@@ -282,8 +280,6 @@ class MSRGBConvNeXtUPerNet(pl.LightningModule):
             model_name=model_size,
             rgb_in_channels=rgb_in_channels,
             ms_in_channels=ms_in_channels,
-            fusion_strategy=fusion_strategy,
-            fusion_type=fusion_type,
             drop_path_rate=drop_path_rate
         )
 

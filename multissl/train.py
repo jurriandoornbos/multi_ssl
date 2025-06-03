@@ -39,7 +39,7 @@ def get_args():
 
     # Training Hyperparameters
     parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=0.02, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum for optimizer")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--dataset_size", type=int, default = 1_000_000, help = "Dataset size, overridden after dataloading" )
@@ -178,8 +178,11 @@ def main():
         every_n_train_steps = args.save_every
     )
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval = "step")
-
-    im_monitor = ImageSaverCallback(args =args)
+    if args.backbone == "pasiphae":
+        from multissl.plots_pasiphae import ImageSaverCallback
+        im_monitor = ImageSaverCallback(args =args)
+    else:
+        im_monitor = ImageSaverCallback(args =args)
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
 
