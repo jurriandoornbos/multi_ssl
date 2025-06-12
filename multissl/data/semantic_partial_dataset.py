@@ -220,24 +220,8 @@ class MixedSupervisionSegmentationDataset(Dataset):
         
         processed_mask = mask.copy()
         
-        # Create binary masks for foreground and background
-        foreground_mask = (mask > 0)
         unlabeled_mask = (mask == 0)
-        
-        # Apply morphological operations to identify certain regions
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        
-        # Erode foreground to get "definitely foreground" regions
-        certain_foreground = cv2.erode(foreground_mask.astype(np.uint8), kernel, iterations=1)
-        
-        # Dilate foreground to get "possibly foreground" regions
-        possible_foreground = cv2.dilate(foreground_mask.astype(np.uint8), kernel, iterations=2)
-        
-          # Regions that are neither certain foreground nor certain background become ignore
-        uncertain_regions = ~(certain_foreground.astype(bool))
                 
-        # Set uncertain regions to ignore_index
-        processed_mask[uncertain_regions] = self.ignore_index
         processed_mask[unlabeled_mask] = self.ignore_index
         
         return processed_mask

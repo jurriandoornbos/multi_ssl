@@ -11,6 +11,57 @@ from .msrgb_convnext_upernet import MSRGBConvNeXtUPerNet
 from multissl.plotting.semi_plots import plot_mixed_supervision_validation, plot_supervision_statistics
 import matplotlib.pyplot as plt
 
+
+class UncertaintyWeightedLoss(nn.Module):
+    """
+    Weight losses based on prediction uncertainty/confidence
+    """
+    def __init__(self, base_loss=None, ignore_index=255, uncertainty_type='entropy'):
+        super().__init__()
+        self.base_loss = base_loss or nn.CrossEntropyLoss(ignore_index=ignore_index, reduction='none')
+        self.ignore_index = ignore_index
+        self.uncertainty_type = uncertainty_type
+        
+    def forward(self, pred, target):
+        """
+        Args:
+            pred: Predictions [B, C, H, W]
+            target: Ground truth [B, H, W]
+        """
+        # Compute base loss (per-pixel)
+        pixel_loss = self.base_loss(pred, target)  # [B, H, W]
+        
+        # Create mask for valid pixels
+        mask = (target != self.ignore_index)
+        
+        if not mask.any():
+            return torch.tensor(0.0, device=pred.device, requires_grad=True)
+        
+        # Compute uncertainty weights
+        with torch.no_grad():
+            if self.uncertainty_type == 'entropy':
+                # Use entropy as uncertainty measure
+                probs = F.softmax(pred, dim=1)  # [B, C, H, W]
+                entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)  # [B, H, W]
+                # Normalize entropy to [0, 1]
+                max_entropy = torch.log(torch.tensor(pred.size(1), device=pred.device))
+                uncertainty_weights = entropy / max_entropy
+                
+            elif self.uncertainty_type == 'confidence':
+                # Use 1 - max_probability as uncertainty
+                probs = F.softmax(pred, dim=1)  # [B, C, H, W]
+                max_probs, _ = torch.max(probs, dim=1)  # [B, H, W]
+                uncertainty_weights = 1.0 - max_probs
+                
+            else:
+                raise ValueError(f"Unknown uncertainty type: {self.uncertainty_type}")
+        
+        # Apply weights only to valid pixels
+        weighted_loss = pixel_loss * uncertainty_weights
+        valid_loss = weighted_loss[mask]
+        
+        return valid_loss.mean()
+    
 class FocalLoss(nn.Module):
     """
     Focal Loss implementation as a drop-in replacement for nn.CrossEntropyLoss.
@@ -30,47 +81,89 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
         self.reduction = reduction
         self.ignore_index = ignore_index
-        
+            
     def forward(self, inputs, targets):
+            # Compute cross entropy
+            ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+            
+            # Compute probabilities  
+            pt = torch.exp(-ce_loss)
+            
+            # Apply alpha weighting
+            if isinstance(self.alpha, (float, int)):
+                alpha_t = self.alpha
+            else:
+                alpha_t = self.alpha.gather(0, targets)
+                
+            # Compute focal loss
+            focal_loss = alpha_t * (1 - pt) ** self.gamma * ce_loss
+            
+            # Handle ignore_index - mask is already applied by F.cross_entropy
+            valid_mask = ~torch.isnan(focal_loss) & ~torch.isinf(focal_loss)
+            
+            if self.reduction == 'mean':
+                valid_count = valid_mask.sum()
+                if valid_count > 0:
+                    return focal_loss[valid_mask].sum() / valid_count
+                else:
+                    return torch.tensor(0.0, device=focal_loss.device, requires_grad=True)
+            elif self.reduction == 'sum':
+                return focal_loss[valid_mask].sum()
+            else:
+                return focal_loss
+            
+class LabelSmoothingLoss(nn.Module):
+    """
+    Label smoothing loss that reduces overfitting to incorrect labels.
+    Fixed to handle proper tensor dimensions for segmentation.
+    """
+    def __init__(self, num_classes, smoothing=0.1, ignore_index=255):
+        super().__init__()
+        self.smoothing = smoothing
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        self.confidence = 1.0 - smoothing
+        
+    def forward(self, pred, target):
         """
         Args:
-            inputs: Tensor of shape (N, C) where N is batch size and C is number of classes
-            targets: Tensor of shape (N,) containing class indices
-            
-        Returns:
-            Focal loss value
+            pred: Predictions [B, C, H, W]
+            target: Ground truth [B, H, W]
         """
-        # Compute cross entropy
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+        # Get dimensions
+        B, C, H, W = pred.shape
         
-        # Compute probabilities
-        pt = torch.exp(-ce_loss)
+        # Create mask for valid pixels (not ignore_index)
+        mask = (target != self.ignore_index)  # [B, H, W]
         
-        # Apply alpha weighting
-        if isinstance(self.alpha, (float, int)):
-            alpha_t = self.alpha
-        else:
-            alpha_t = self.alpha.gather(0, targets)
-            
-        # Compute focal loss
-        focal_loss = alpha_t * (1 - pt) ** self.gamma * ce_loss
+        if not mask.any():
+            # No valid pixels, return zero loss
+            return torch.tensor(0.0, device=pred.device, requires_grad=True)
         
-        # Handle ignore_index
-        if self.ignore_index >= 0:
-            mask = targets != self.ignore_index
-            focal_loss = focal_loss * mask
+        # Flatten predictions and targets for easier processing
+        pred_flat = pred.permute(0, 2, 3, 1).reshape(-1, C)  # [B*H*W, C]
+        target_flat = target.reshape(-1)  # [B*H*W]
+        mask_flat = mask.reshape(-1)  # [B*H*W]
         
-        # Apply reduction
-        if self.reduction == 'mean':
-            if self.ignore_index >= 0:
-                return focal_loss.sum() / mask.sum()
-            else:
-                return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:  # 'none'
-            return focal_loss
+        # Filter out ignored pixels
+        valid_pred = pred_flat[mask_flat]  # [N_valid, C]
+        valid_target = target_flat[mask_flat]  # [N_valid]
         
+        if valid_target.numel() == 0:
+            return torch.tensor(0.0, device=pred.device, requires_grad=True)
+        
+        # Create smooth target distribution
+        smooth_target = torch.full_like(valid_pred, self.smoothing / (self.num_classes - 1))
+        
+        # Set confidence for true class
+        smooth_target.scatter_(1, valid_target.unsqueeze(1), self.confidence)
+        
+        # Compute KL divergence loss
+        log_pred = F.log_softmax(valid_pred, dim=1)
+        loss = F.kl_div(log_pred, smooth_target, reduction='batchmean')
+        
+        return loss
+          
 class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
     """
     UPerNet model extended to handle mixed supervision training.
@@ -119,8 +212,8 @@ class MSRGBConvNeXtUPerNetMixed(MSRGBConvNeXtUPerNet):
         self.use_consistency_loss = use_consistency_loss
         
         # Create separate loss functions for different supervision types
-        self.full_criterion = FocalLoss(ignore_index=ignore_index)
-        self.partial_criterion = FocalLoss(ignore_index=ignore_index)
+        self.full_criterion =  LabelSmoothingLoss(num_classes = num_classes, ignore_index=ignore_index)
+        self.partial_criterion = UncertaintyWeightedLoss(ignore_index=ignore_index)
         
         # For consistency loss (comparing predictions from different augmentations)
         self.consistency_criterion = nn.KLDivLoss(reduction='mean')

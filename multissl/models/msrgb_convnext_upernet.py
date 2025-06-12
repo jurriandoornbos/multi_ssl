@@ -274,6 +274,7 @@ class MSRGBConvNeXtUPerNet(pl.LightningModule):
         self.aux_weight = aux_weight
         self.upsample_output = upsample_output
         self.ignore_index = ignore_index
+        self.freeze_backbone = freeze_backbone
         
 
         self.backbone = MSRGBConvNeXtFeatureExtractor(
@@ -331,8 +332,13 @@ class MSRGBConvNeXtUPerNet(pl.LightningModule):
             self.backbone.requires_grad_(False)
 
     def forward(self, rgb=None, ms=None):
+        if self.freeze_backbone:
+            with torch.no_grad():
+                features = self.backbone(rgb = rgb, ms= ms)
+        else:
+            features = self.backbone(rgb = rgb, ms= ms)
 
-        features = self.backbone(rgb = rgb, ms= ms)
+
 
         # Apply segmentation head
         seg_logits = self.decode_head(features)

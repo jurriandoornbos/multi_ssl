@@ -25,7 +25,7 @@ def plot_mixed_supervision_validation(
     save_path: Optional[str] = None,
     logger: Optional[Any] = None,
     global_step: int = 0,
-    colormap: str = 'tab10'
+    colormap: str = 'gist_ncar'
 ) -> plt.Figure:
     """
     Create comprehensive visualization for mixed supervision validation.
