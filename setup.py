@@ -10,10 +10,10 @@ from setuptools import setup, find_packages
 
 setup(
     name="multissl",
-    version="0.1.0",
+    version="0.2.0",
     author="Jurrian Doornbos",
     author_email="jurrian.dooornbos@wur.nl",
-    description="A multispectral adapataion for lightly-ssl",
+    description="A multispectral adaptation for lightly-ssl",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/jurriandoornbos/multi_ssl",  # Change this to your repository link
@@ -28,7 +28,9 @@ setup(
         "tifffile",
         "wandb",
         "rioxarray",
-        "scikit-learn"
+        "scikit-learn",
+        "pycocotools",
+        "matplotlib",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

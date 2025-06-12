@@ -36,7 +36,9 @@
   
 ## Summary
 
-MultiSSL is a comprehensive library for self-supervised and semi-supervised learning targeting multi-spectral imagery. It provides implementations of modern representation learning methods specifically tailored for remote sensing and precision agriculture applications using UAVs.
+MultiSSL is a comprehensive library for self-supervised and semi-supervised learning targeting multi-spectral + rgb imagery. It provides implementations of modern representation learning methods specifically tailored for remote sensing and precision agriculture applications using UAVs.
+
+The main idea is to have a pretrained backbone (from the model zoo below) + tune your own application head for it. The main contribution here is a pretrained `MSRGBConvNeXtFeatureExtractor`, which takes in RGB (3ch) and/or MS (5ch) data. 
 
 The library builds upon PyTorch Lightning and LightlySSL to provide flexible, production-ready implementations of recent self-supervised learning algorithms. MultiSSL is designed to work with multi-channel data (RGB+NIR and beyond) and provides specialized data transformations and visualization tools for these data types.
 
@@ -66,8 +68,32 @@ Specialized tools for working with large orthomosaic imagery:
 
 Lightning classes for Semantic segmentation based on the same backbones from FastSiam
 
-- **SegmentationModel**: Using the backbone from Swin, or Resnet to build a UNet style decoder
+- **Segmentation Models**: Using the backbones from fastsiam pretrained to build a semantic segmentation model
 - **RandomForestSegmentation**: RandomForest from sklearn for pixelwise predictions.
+
+
+## Model zoo
+
+MultiSSL includes the following pretrained models:
+
+- **Self-Supervised Backbones**
+
+  - MSRGBConvNeXtFeatureExtractor: A feature extractor using both/either RGB + Multispectral inputs based on a ConVNeXt architecture. Available under `multi_ssl.models`, can be initialized with sizes `nano`,`tiny`,`small`, `base` and `large`. Expects separate RGB and MS tensors for the forward pass `.forward(rgb = , ms = )`.
+    - [nano (5M param backbone)](https://https://blank.page/) TODO
+    - [tiny (29M param backbone)](https://e.pcloud.link/publink/show?code=kZsyOtZVAUcQGW6uW0UwAUOgWJyOm1Ue6xV) Trained for 54 hours on 500k samples from `msuav500k` using the FastSiam method.
+
+  - 4 channel multispectral pretrained models
+    - [ResNet18 (11M param backbone)](https://e.pcloud.link/publink/show?code=kZREFqZ8514cPJqIjp9yuvOMwg2RS6Cyet7)
+    - [SWIN-T Tiny (27.5M param backbone)](https://e.pcloud.link/publink/show?code=kZ4EFqZ5KNjg280mKmceWlLOq1VUS3o1Drk)
+
+- **Trainable Segmentation Heads**
+  - `models.MSRGBConvNeXtFeatureExtractor`:
+    - `models.MSRGBConvNeXtUPerNet`: Fully supervised semantic segmentation model for 3ch RGB + 5ch MS data.
+    - `models.MSRGBConvNeXtUPerNetMixed`: Semi-supervised semantic segmentation model for 3ch RGB + 5ch MS data.
+  - 4 Channel Multispectral backbone:
+    - `models.seghead.SegmentationModel`: Fully supervised segmentation model for 4 channel multispectral pretrained models
+  - RandomForestSegmentation: Efficient feature-based segmentation on torch tensors, for comparison purposes.
+
 
 ## Installation
 
@@ -83,72 +109,7 @@ pip install -e .
 
 ## Usage
 
-Most useful code can be found under the `notebooks` folder. However, for pretraining using Self supervised, the `train.py` is your best bet. 
-
-### Self-Supervised Pretraining
-
-Data and Hardware Configuration
-
-- input_dir: Required path to your dataset folder
-- batch_size: 32 images per batch (default)
-- num_workers: 4 parallel data loading processes (default)
-- input_size: 224×224 pixel images (default)
-- device: Uses CUDA if available, falls back to CPU
-
-Model Architecture
-
-- in_channels: 4 input channels (default, suitable for RGB+NIR data)
-- backbone: Choice between resnet18 (default), resnet50, vit-s, or swin-tiny
-- ssl_method: Self-supervised learning method - fastsiam (default), simclr, or simsiam
-- num_views: 4 augmented views per image (default, with 3 target + 1 base recommended for FastSiam)
-
-Network Architecture Details
-
-- hidden_dim: 2048 neurons in hidden layers (default)
-- proj_dim: 256-dimensional projection head output (default)
-- pred_dim: 128-dimensional prediction head output (default)
-
-Training Parameters
-
-- epochs: 25 training epochs (default)
-- lr: 0.02 base learning rate (default)
-- momentum: 0.9 momentum for SGD optimizer (default)
-- weight_decay: 1e-4 L2 regularization (default)
-- save_every: Saves checkpoint every 1000 steps (default)
-
-Reproducibility and Resuming
-
-- seed: 42 random seed for reproducible results (default)
-- checkpoint_path: Optional path to resume training from a checkpoint
-
-The dataset_size parameter is automatically overridden during data loading with the actual dataset size, so you don't need to set it manually.
-
-This can be used in a bash line for training a model:
-
-```bash
-
-# Training command
-python multissl/train.py \
-  --input_dir path/to/data \
-  --batch_size 64 \
-  --num_workers 8 \
-  --input_size 224 \
-  --in_channels 4 \
-  --backbone resnet18 \
-  --ssl_method fastsiam \
-  --hidden_dim 2048 \
-  --proj_dim 256 \
-  --pred_dim 128 \
-  --epochs 50 \
-  --lr 0.05 \
-  --momentum 0.9 \
-  --weight_decay 1e-4 \
-  --num_views 4 \
-  --save_every 500 \
-  --seed 42
-
-```
-python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 16 --num_workers 4 --backbone pasiphae --epochs 1 --save_every 500 --smote True
+Most useful code can be found under the `notebooks` folder.
 
 ### Fully supervised segmentation model training
 This simplified code demonstrates how to train a segmentation model for aerial/satellite imagery using MultiSSL:
@@ -283,19 +244,73 @@ output_ortho = predict_ortho(
 output_ortho.rio.to_raster("path/to/output/prediction.tif")
 ```
 
-## Model zoo
 
-MultiSSL includes the following models:
+### Self-Supervised Pretraining
 
-- **Self-Supervised Models**
-  - FastSiam: A multi-view contrastive learning model
-    * Pretrained backbones (last.ckpt is after 2 full passes on the dataset):
-    - [ResNet18 (11M param backbone)](https://e.pcloud.link/publink/show?code=kZREFqZ8514cPJqIjp9yuvOMwg2RS6Cyet7)
-    - [SWIN-T Tiny (27.5M param backbone)](https://e.pcloud.link/publink/show?code=kZ4EFqZ5KNjg280mKmceWlLOq1VUS3o1Drk)
+Data and Hardware Configuration
 
-- **Segmentation Models**
-  - SegmentationModel: Fully supervised segmentation model
-  - RandomForestSegmentation: Efficient feature-based segmentation
+- input_dir: Required path to your dataset folder
+- batch_size: 32 images per batch (default)
+- num_workers: 4 parallel data loading processes (default)
+- input_size: 224×224 pixel images (default)
+- device: Uses CUDA if available, falls back to CPU
+
+Model Architecture
+
+- in_channels: 4 input channels (default, suitable for RGB+NIR data)
+- backbone: Choice between resnet18 (default), resnet50, vit-s, or swin-tiny
+- ssl_method: Self-supervised learning method - fastsiam (default), simclr, or simsiam
+- num_views: 4 augmented views per image (default, with 3 target + 1 base recommended for FastSiam)
+
+Network Architecture Details
+
+- hidden_dim: 2048 neurons in hidden layers (default)
+- proj_dim: 256-dimensional projection head output (default)
+- pred_dim: 128-dimensional prediction head output (default)
+
+Training Parameters
+
+- epochs: 25 training epochs (default)
+- lr: 0.02 base learning rate (default)
+- momentum: 0.9 momentum for SGD optimizer (default)
+- weight_decay: 1e-4 L2 regularization (default)
+- save_every: Saves checkpoint every 1000 steps (default)
+
+Reproducibility and Resuming
+
+- seed: 42 random seed for reproducible results (default)
+- checkpoint_path: Optional path to resume training from a checkpoint
+
+The dataset_size parameter is automatically overridden during data loading with the actual dataset size, so you don't need to set it manually.
+
+This can be used in a bash line for training a model:
+
+```bash
+
+# Training command
+python multissl/train.py \
+  --input_dir path/to/data \
+  --batch_size 64 \
+  --num_workers 8 \
+  --input_size 224 \
+  --in_channels 4 \
+  --backbone resnet18 \
+  --ssl_method fastsiam \
+  --hidden_dim 2048 \
+  --proj_dim 256 \
+  --pred_dim 128 \
+  --epochs 50 \
+  --lr 0.05 \
+  --momentum 0.9 \
+  --weight_decay 1e-4 \
+  --num_views 4 \
+  --save_every 500 \
+  --seed 42
+
+```
+python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 16 --num_workers 4 --backbone pasiphae --epochs 1 --save_every 500 --smote True
+
+
 
 ## Contributing
 
