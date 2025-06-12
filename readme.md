@@ -64,7 +64,7 @@ Specialized tools for working with large orthomosaic imagery:
 
 ### Semantic Segmentation Models
 
-<img src="saved_images/fullysupeSeg.png" width=400 alt="fully supervised">
+<img src="saved_images/msrgb_convnext.png" width=400 alt="fully supervised">
 
 Lightning classes for Semantic segmentation based on the same backbones from FastSiam
 
