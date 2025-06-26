@@ -30,7 +30,7 @@ def get_args():
     
     # Self-Supervised Learning Model
     parser.add_argument("--in_channels", type=int, default = 4, help = "Number of input channels of the image")
-    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s", "swin-tiny", "pasiphae"], help="Backbone model for SSL")
+    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet50", "vit-s", "swin-tiny", "pasiphae-tiny",'pasiphae-nano'], help="Backbone model for SSL")
     parser.add_argument("--ssl_method", type=str, default="fastsiam", choices=["fastsiam", "galileo-fastsiam"], help="SSL method")
     parser.add_argument("--hidden_dim", type=int, default=2048, help="Hidden layer dimension")
     parser.add_argument("--proj_dim", type=int, default=256, help="Projection head dimension")
@@ -71,7 +71,7 @@ def main():
 
     pl.seed_everything(args.seed)
 
-    if args.backbone == "pasiphae":
+    if args.backbone == "pasiphae-tiny" or args.backbone == "pasiphae-nano":
         batch_size = args.batch_size
         dataset_train_ms = MixedUAVDataset(
             root_dir = args.input_dir,
@@ -178,7 +178,7 @@ def main():
         every_n_train_steps = args.save_every
     )
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval = "step")
-    if args.backbone == "pasiphae":
+    if args.backbone == "pasiphae-nano" or args.backbone =="pasiphae-tiny":
         from multissl.plots_pasiphae import ImageSaverCallback
         im_monitor = ImageSaverCallback(args =args)
     else:

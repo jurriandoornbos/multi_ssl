@@ -2,6 +2,7 @@
 wandb
 checkpoints*
 dataset
+saved_images/*viz*
 notebooks/segmentation_checkpoints
 notebooks/vineseg_checkpoints
 notebooks/figs
@@ -10,6 +11,7 @@ notebooks/lightning_logs
 notebooks/wandb/
 notebooks/treeai_checkpoints/
 notebooks/*.png
+notebooks/predictions*
 roi_logs
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -171,3 +173,5 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+saved_images/hallucination_viz_step_12000_batch_11999.png
+saved_images/hallucination_viz_step_1_batch_0.png

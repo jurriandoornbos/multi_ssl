@@ -79,8 +79,8 @@ MultiSSL includes the following pretrained models:
 - **Self-Supervised Backbones**
 
   - MSRGBConvNeXtFeatureExtractor: A feature extractor using both/either RGB + Multispectral inputs based on a ConVNeXt architecture. Available under `multi_ssl.models`, can be initialized with sizes `nano`,`tiny`,`small`, `base` and `large`. Expects separate RGB and MS tensors for the forward pass `.forward(rgb = , ms = )`.
-    - [nano (5M param backbone)](https://https://blank.page/) TODO
-    - [tiny (29M param backbone)](https://e.pcloud.link/publink/show?code=kZsyOtZVAUcQGW6uW0UwAUOgWJyOm1Ue6xV) Trained for 54 hours on 500k samples from `msuav500k` using the FastSiam method.
+    - [nano (5M param backbone)](https://e.pcloud.link/publink/show?code=kZsyOtZVAUcQGW6uW0UwAUOgWJyOm1Ue6xV) Trained for 5 hours on 500k samples from `msuav500k` using the FastSiam method.
+    - [tiny (29M param backbone)](https://e.pcloud.link/publink/show?code=kZsyOtZVAUcQGW6uW0UwAUOgWJyOm1Ue6xV) Trained for 154 hours on 500k samples from `msuav500k` using the FastSiam method.
 
   - 4 channel multispectral pretrained models
     - [ResNet18 (11M param backbone)](https://e.pcloud.link/publink/show?code=kZREFqZ8514cPJqIjp9yuvOMwg2RS6Cyet7)
@@ -308,7 +308,7 @@ python multissl/train.py \
   --seed 42
 
 ```
-python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 16 --num_workers 4 --backbone pasiphae --epochs 1 --save_every 500 --smote True
+python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 16 --num_workers 4 --backbone pasiphae-nano --epochs 1 --save_every 500 --smote True
 
 
 
