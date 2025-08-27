@@ -1,17 +1,13 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import torch
-import torch.nn.functional as F
 import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
-import seaborn as sns
-from pathlib import Path
-import wandb
-import pytorch_lightning as pl
+from typing import Dict, Any, List, Optional
+
 
 # Set up plotting style
 plt.style.use('default')
-sns.set_palette("husl")
+
 
 
 def plot_mixed_supervision_validation(

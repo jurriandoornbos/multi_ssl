@@ -308,7 +308,7 @@ python multissl/train.py \
   --seed 42
 
 ```
-python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 16 --num_workers 4 --backbone pasiphae-nano --epochs 1 --save_every 500 --smote True
+python multissl/train.py --input_dir ../msdata/data/output_multi/ --batch_size 16 --num_workers 4 --backbone pasiphae-tiny --epochs 1 --save_every 500 --smote True
 
 
 
