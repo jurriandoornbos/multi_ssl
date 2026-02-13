@@ -60,7 +60,6 @@ def get_transform(args = None, img_size = None, ks =3,std_noise = 0.01, brightne
     #base.append(CustomChannelDropout(drop_prob=0.2, channels_to_drop=1))
     
 
-    
     # Convert to float in 0-1 range
     base.append(SafeUIntToFloat())
     # Add Gaussian noise
@@ -80,3 +79,4 @@ def get_transform(args = None, img_size = None, ks =3,std_noise = 0.01, brightne
     pipeline = transforms.Compose(base)
     
     return pipeline
+

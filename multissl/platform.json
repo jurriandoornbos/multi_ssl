@@ -1,0 +1,40 @@
+{
+    "title": "MultiSSL - Self/Semi-Supervised Learning for Multispectral UAV Imagery",
+    "creator": "ICAERUS / Jurrian Doornbos (jurriandoornbos)",
+    "date": "13/02/2026",
+    "icon": "https://raw.githubusercontent.com/jurriandoornbos/multi_ssl/refs/heads/main/saved_images/icon_pasi.png",
+    "url": "https://github.com/jurriandoornbos/multi_ssl",
+    "icaerus_applications": [
+    ],
+    "uses_cases": [
+    ],
+    "description": "MultiSSL is a library for self-supervised and semi-supervised representation learning on multispectral and RGB UAV imagery. It provides pretrained backbones, data loaders and utilities to train FastSiam-like methods, build segmentation models and reconstruct orthomosaic predictions from tiled inferences.",
+    "filters": {
+        "content": [
+            "Self-supervised learning",
+            "Semi-supervised learning"
+        ],
+        "data_type": [
+            "RGB images",
+            "Multispectral images (Red, Green, RedEdge, NIR)",
+            "Orthomosaics (GeoTIFF)",
+            "Image chips / tiles"
+        ],
+        "subject": [
+            "Precision agriculture",
+            "Crop monitoring",
+            "Vegetation analysis",
+            "Remote sensing"
+        ],
+        "location": [
+            "Global"
+        ],
+        "model_input": [
+            "Multispectral images"
+        ],
+        "model_output": [
+            "Feature maps",
+            "Reconstructed orthomosaic predictions"
+        ]
+    }
+}
